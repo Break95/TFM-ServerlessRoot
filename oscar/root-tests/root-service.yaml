@@ -1,0 +1,11 @@
+functions:
+  oscar:
+  - root-cluster:
+      name: root-map
+      memory: 4Gi
+      cpu: '1.0'
+      image: xbr34k/root-faas-demo
+      script: root-map.sh
+      output:
+      - storage_provider: minio.default
+        path: example-root/out
