@@ -1,4 +1,4 @@
-FROM rootproject/root
+FROM rootproject/root:6.26.02-ubuntu22.04
 
 RUN apt update && apt install -y jq && apt clean && rm -rf /var/lib/apt/lists/*
 
