@@ -20,7 +20,7 @@ echo $(env)
     #   is to open the file inside the python script and parse it there.
 
     echo "La salida se guardara en ${TMP_OUT_DIR}/${FILE_NAME}"
-    python3 /opt/python-runner.py "$INPUT_FILE_PATH" "$TMP_OUT_DIR/$FILE_NAME"
+    python3 /opt/serverless-reducer.py "$INPUT_FILE_PATH" "$TMP_OUT_DIR/$FILE_NAME"
     echo "Python function ended"
 #fi
 echo "Exiting map.sh"

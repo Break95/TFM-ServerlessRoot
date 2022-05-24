@@ -1,0 +1,14 @@
+functions:
+  oscar:
+  - root-cluster:
+      name: root-mapper
+      memory: 2Gi
+      cpu: '1.0'
+      image: ghcr.io/break95/root-mapper
+      script: root-map.sh
+      output:
+      - storage_provider: minio.default
+        path: root-oscar/out
+      - storage_provider: minio.default
+        path: root-oscar/logs 
+
