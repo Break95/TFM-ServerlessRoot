@@ -14,14 +14,24 @@ RUN apt-get update && \
 # Python deps
 RUN pip install numpy jupyter
 
-# ROOT
+# Build ROOT
 RUN git clone https://github.com/root-project/root.git root_src
 RUN mkdir root_build
-RUN cmake -Dminimal=ON -Dpyroot=ON -Ddataframe=ON -Dbuiltin_xrootd=ON -Dxrootd=ON -Dbuiltin_davix=ON -Ddavix=ON -Dgnuinstall=ON -DCMAKE_INSTALL_PREFIX=root_install -B root_build -S root_src
+RUN cmake -Dgminimal=ON -Dasimage=ON -Ddev=ON \
+          -Druntime_cxxmodules=ON -Dgnuinstall=ON -Dsonames=ON \
+          -Dbuiltin_xrootd=ON -Dxrootd=ON -Dbuiltin_davix=ON -Ddavix=ON \
+          -Dpyroot=ON -Ddataframe=ON \
+          -B root_build -S root_src
 RUN cmake --build root_build -- install -j$(nproc)
 
+# Remove artifacts
 RUN rm -rf root_build root_src
 
-ENV PYTHONPATH /root_install/lib/root
+# Change environment so that libraries are properly found
+RUN echo /usr/local/lib/root >> /etc/ld.so.conf && ldconfig
+ENV PYTHONPATH /usr/local/lib/root:$PYTHONPATH
+ENV CLING_STANDARD_PCH none
 
-CMD  /bin/bash -c "source /root_install/bin/thisroot.sh && jupyter notebook --allow-root"
+# Start a jupyter notebook
+EXPOSE 8888
+CMD ["rootnb.exe", "--port=8888", "--no-browser", "--allow-root", "--ip=0.0.0.0"]
