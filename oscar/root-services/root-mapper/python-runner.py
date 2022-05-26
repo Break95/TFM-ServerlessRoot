@@ -4,8 +4,23 @@ import ast
 import cloudpickle
 import pickle
 import ROOT
+import requests
+import json
 
-#print(sys.argv[1])
+def decode_payload(obj):
+	pass
+
+def encode_payload(obj):
+	return str(base64.b64encode(cloudpickle.dumps(obj)))
+
+'''
+The mapper receives a dictionary with the following data:
+    - mapper function
+    - ranges
+    - reduction function
+    - red_index
+    - reducer token
+'''
 
 with open(sys.argv[1]) as json_string: # Add try
 	file_cont = json_string.read()
@@ -29,17 +44,33 @@ with open(sys.argv[1]) as json_string: # Add try
 	#print(range.end)
 	result = mapper(range)
 
-	# Write result to file
-	file_name =  str(range.start) + '_' + str(range.end) + 'jobname_id'
-	#print(sys.argv[2] + '/' + str(file_name))
 
-	f  = open(sys.argv[2] + '/' + file_name, "wb")
-	cloudpickle.dump(result, f)
-	f.close()
+	token = payload_dict['token']
+	print(token)
 
-# Connect to inner storage service.
+	# Get reduction index
+	red_index = int(payload_dict['index'])
+	print(f'Reduction index: {red_index}')
+	if red_index != 0:
+		# Call reducer
+		x = requests.post('https://busy-jackson2.im.grycap.net/job/root-reduce',
+			      headers = {
+				      "Accept": "application/json",
+				      "Authorization": 'Bearer ' + token},
+			      json=json.dumps({
+				      'partial_1': encode_payload(result),
+				      'ranges': encode_payload(range),
+				      'reducer': payload_dict['reducer'],
+				      'index': red_index - 1}))
 
+		print(x)
+		# Write to log
+	else:
+		# Write to file
+		file_name = f'{range.start}_{range.end}'
+		print(f'{sys.argv[2]}/{file_name}')
+		f = open(f'{sys.argv[2]}/{file_name}', "wb")
+		cloudpickle.dump(result, f)
+		f.close()
 
-# Aync call to reducer.
-
-# Write logs to bucket.
+		# Write to log

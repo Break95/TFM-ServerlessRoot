@@ -1,10 +1,10 @@
 functions:
   oscar:
-  - root-cluster:
+  - grycap-oscar:
       name: root-reduce
       memory: 2Gi
       cpu: '1.0'
-      image: ghcr.io/break95/root-reduce
+      image: ghcr.io/break95/root-reducer
       script: root-reduce.sh
       output:
       - storage_provider: minio.default
