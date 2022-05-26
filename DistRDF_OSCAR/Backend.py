@@ -8,7 +8,9 @@ import base64
 import cloudpickle
 from minio import Minio
 import time
-
+from math import log, ceil, floor
+from itertools import chain
+from time import sleep
 from DistRDF import DataFrame
 from DistRDF import HeadNode
 from DistRDF.Backends import Base
@@ -73,66 +75,108 @@ class OSCARBackend(Base.BaseBackend):
             list: A list representing the values of action nodes returned
             after computation (Map-Reduce).
         """
-        #headers = self.headers
-        #shared_libraries = self.shared_libraries
+        
+        def index_generator(num_jobs, reduction_factor):
+            x = log(num_jobs) / log(reduction_factor)
+            max_jobs = 2**floor(x) #Rename this variable, no longer holds max_jobs
+            depth = ceil(x)
 
+            if x.is_integer():
+                remainder = 0
+            else:
+                remainder = num_jobs - max_jobs
 
-        #print(inspect.getsource(mapper))
-        #print('#####')
-        #print(cloudpickle.dumps(mapper))
+            indexes = [0]
+            for i in range(depth):
+                indexes = list(chain.from_iterable( [[elem + 1, 0] for elem in indexes] ))
+
+            last_tree_size = int(len(indexes)/2)
+
+            while remainder > 0:
+                x = log(remainder) / log(reduction_factor)
+                max_jobs = 2**floor(x)
+                depth = ceil(x)
+
+                # Remove right hand side.
+                indexes = indexes[0:last_tree_size]
+                last_tree_size += max_jobs
+
+                sub_tree = [0]
+
+                if x.is_integer():
+                    remainder = 0
+                else:
+                    remainder = remainder - max_jobs
+
+                for i in range(depth):
+                    sub_tree = list(chain.from_iterable( [[elem+1,0] for elem in sub_tree] ))
+
+                indexes = indexes + sub_tree
+
+            return indexes
+        
+        # Generate indexing.
+        reduction_factor = 2
+        reduce_indices = index_generator(len(ranges), reduction_factor)
+        print(reduce_indices)
+
         omapper = str(base64.b64encode(cloudpickle.dumps(mapper)))
-        for range in ranges:
-             orange = str(base64.b64encode(cloudpickle.dumps(range)))
-             requests.post(self.client['endpoint'],
+        oreducer = str(base64.b64encode(cloudpickle.dumps(reducer)))
+
+        for rang in ranges:
+             orange = str(base64.b64encode(cloudpickle.dumps(rang)))
+             x = requests.post(self.client['endpoint'],
                            headers= {
                                "Accept": "application/json",
                                "Authorization": "Bearer " + self.client['token']},
                            json=json.dumps(  {'mapper': omapper,
-                                              'ranges': orange}),
-                           verify=False)
-
-        #oreducer = str(base64.b64encode(cloudpickle.dumps(reducer)))
-
-
-        # Check endpoint for files to be uploaded
-        # This asumes we have acces to the "intermediate" storage service.
-        minioClient = Minio(
-            "localhost:30300",
-            access_key="minio",
-            secret_key="minioPassword",
-            secure=False
-        )
+                                              'ranges': orange,
+                                              'reducer': oreducer,
+                                              'index': reduce_indices.pop(0),
+                                              'token': self.client['red_token']}))
+             print(x)                                 
+             
 
         # Retrieve files
-        print(minioClient.list_buckets())
-        time.sleep(10)
-        mergeables_lists = []
-        #for range in ranges:
-        if minioClient.bucket_exists("root-oscar"):
-            for range in ranges:
-                response = minioClient.get_object("root-oscar",       # Bucket name
-                                             "intermediate-out/" +  str(range.start) + '_' + # Object name
-                                             str(range.end) + 'jobname_id')
-                with open('my-testfile', 'wb') as file_data:
-                    for d in response.stream(32*1024):
-                        file_data.write(d)
+        # Obtain final result
+        mc = Minio(self.client['minio_endpoint'],
+            access_key=self.client['minio_access'],
+            secret_key=self.client['minio_secret'])
 
-                with open('my-testfile', 'rb') as file_data:
-                    mergeables_lists.append(cloudpickle.loads(file_data.read()))
-                #print(response.status)
-                #print(response)                print(response.data.decode())
-                #mergeable_lists.append(cloudpickle.dumps(response))
+        found = False
+
+        start = ranges[0].start
+        end = ranges[-1].end
+        target_name = f'{start}_{end}'
+        full_name = ''
+        final_result = None
+        
+        if mc.bucket_exists("root-oscar"):
+            while not found:
+                files = mc.list_objects('root-oscar', 'out/',
+                             recursive=True)
+
+
+                for obj in files:
+                    full_name = obj.object_name
+                    file_name = full_name.split('/')[1]
+
+                    if target_name == file_name:
+                            found = True
+                            break
+                print(f'Waiting for final result, sleeping 1 second.')
+                sleep(1)
+            
+            mc.fget_object('root-oscar', full_name, f'/tmp/{full_name}')
+            handle = open(f'/tmp/{full_name}', "rb")
+            final_result = cloudpickle.load(handle)
+
+            mc.remove_object('root-oscar', full_name)
+
         else:
             print('Bucket does not exist.')
-            return None
 
-        while len(mergeables_lists) > 1:
-            mergeables_lists.append(
-                reducer(mergeables_lists.pop(0), mergeables_lists.pop(0)))
-
-        final_results = mergeables_lists.pop()
-
-        return final_results
+        return final_result
 
     def distribute_unique_paths(self, paths):
         """
@@ -157,3 +201,5 @@ class OSCARBackend(Base.BaseBackend):
         npartitions = kwargs.pop("npartitions", self.optimize_npartitions())
         headnode = HeadNode.get_headnode(npartitions, *args)
         return DataFrame.RDataFrame(headnode, self)
+
+
