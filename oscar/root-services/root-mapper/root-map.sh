@@ -1,28 +1,18 @@
 #!/bin/bash
 
 echo "SCRIPT: Invoked function"
-echo "$INPUT_TYPE" # Esta variable ya no existe.
 echo "$INPUT_FILE_PATH"
 
-#. /root_install/bin/thisroot.sh
-echo $(whoami)
-echo $(python3 --version)
-echo $(root-config --python-version)
-echo $(root-config --python3-version)
-echo $(root-config --python2-version)
+# Pass the function string as parameter. A more verastile alternative
+# and future proof is to open the file inside the python script and
+# parse it there.
+mapper_dir=$(grep -m 1 path: /oscar/config/function_config.yaml | awk '{print $2}')
+endpoint=$(grep endpoint /oscar/config/function_config.yaml | awk '{print $2}')
+access_key=$(grep access_key /oscar/config/function_config.yaml | awk '{print $2}')
+secret_key=$(grep secret_key /oscar/config/function_config.yaml | awk '{print $2}')
 
-#if [ "$INPUT_TYPE" = "json" ]
-#then
-    echo "Inside then"
-    # Pass the function string as parameter. A more verastile alternative
-    #   is to open the file inside the python script and parse it there.
+echo "La salida se guardara en ${TMP_OUTPUT_DIR}"
+python3 /opt/python-runner.py "$INPUT_FILE_PATH" "$TMP_OUTPUT_DIR" "$mapper_dir" "$endpoint" "$access_key" "$secret_key"
+echo "Python function ended"
 
-    echo "La salida se guardara en ${TMP_OUTPUT_DIR}"
-    python3 /opt/python-runner.py "$INPUT_FILE_PATH" "$TMP_OUTPUT_DIR"
-    echo "Python function ended"
-#fi
 echo "Exiting map.sh"
-#FILE_NAME=`basename "$INPUT_FILE_PATH"
-#OUTPUT_FILE="$TMP_OUTPUT_DIR/$FILE_NAME"
-#python3 /opt/python-runner.py "$INPUT_FILE_PATH" -o "$OUTPUT_FILE"
-

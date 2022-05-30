@@ -1,76 +1,52 @@
 import sys
-import base64
-import ast
 import cloudpickle
-import pickle
 import ROOT
-import requests
 import json
-
-def decode_payload(obj):
-	pass
-
-def encode_payload(obj):
-	return str(base64.b64encode(cloudpickle.dumps(obj)))
+from minio import Minio
+import io
 
 '''
-The mapper receives a dictionary with the following data:
-    - mapper function
+The receive file contains two bynary objects:
     - ranges
-    - reduction function
-    - red_index
-    - reducer token
 '''
+rang = None
+#try:
+f = open(sys.argv[1], 'rb')
+rang = cloudpickle.load(f)
+#except:
+#       print('Error reading range input file.')
+#      sys.exit(-1)
 
-with open(sys.argv[1]) as json_string: # Add try
-	file_cont = json_string.read()
-	#print(file_cont)
-	payload_dict = ast.literal_eval(file_cont) # At this point we have something similar to AWS Lambda event dictrionary.
-	print(payload_dict)
-	#print(type(encoded_payload))
+print(sys.argv[4][8:])
+mc = Minio(endpoint=sys.argv[4][8:],
+           access_key=sys.argv[5],
+           secret_key=sys.argv[6])
 
-	# Get mapper function from payload dict.
-	mapper_b64 = ast.literal_eval(payload_dict['mapper'])
-	mapper_bytes = base64.b64decode(mapper_b64)
-	mapper = cloudpickle.loads(mapper_bytes)
-	#print(mapper)
+# Bucket job id
+bucket_name = sys.argv[3].split('/')[0]
+print(f'Bucket Name: {bucket_name}')
 
-	# Get ranges from payload dict.
-	range_b64 = ast.literal_eval(payload_dict['ranges'])
-	range_bytes = base64.b64decode(range_b64)
-	range = cloudpickle.loads(range_bytes)
+# Get mapper function from Bucket.
+mapper_responese = mc.get_object(bucket_name, 'functions/mapper')
+mapper_bytes = mapper_responese.data
+mapper = cloudpickle.loads(mapper_bytes)
+print(f'Mapper: {mapper}')
 
-	#print(range.start)
-	#print(range.end)
-	result = mapper(range)
+result = mapper(rang)
 
+# Write Result
+is_tree_type = type(rang).__name__ == 'TreeRange'
+attr_start = 'globalstart' if is_tree_type else 'start'
+attr_end   = 'globalend'   if is_tree_type else 'end'
 
-	token = payload_dict['token']
-	print(token)
+file_name = f'{getattr(rang, attr_start)}_{getattr(rang, attr_end)}'
+print(f'File Name: {file_name}')
 
-	# Get reduction index
-	red_index = int(payload_dict['index'])
-	print(f'Reduction index: {red_index}')
-	if red_index != 0:
-		# Call reducer
-		x = requests.post('https://busy-jackson2.im.grycap.net/job/root-reduce',
-			      headers = {
-				      "Accept": "application/json",
-				      "Authorization": 'Bearer ' + token},
-			      json=json.dumps({
-				      'partial_1': encode_payload(result),
-				      'ranges': encode_payload(range),
-				      'reducer': payload_dict['reducer'],
-				      'index': red_index - 1}))
+result_bytes = cloudpickle.dumps(result)
+result_stream = io.BytesIO(result_bytes)
+mc.put_object('root-oscar',
+              f'out2/{file_name}',
+              result_stream,
+              length=len(result_bytes))
 
-		print(x)
-		# Write to log
-	else:
-		# Write to file
-		file_name = f'{range.start}_{range.end}'
-		print(f'{sys.argv[2]}/{file_name}')
-		f = open(f'{sys.argv[2]}/{file_name}', "wb")
-		cloudpickle.dump(result, f)
-		f.close()
-
-		# Write to log
+print('Result writte to Bucket.')
