@@ -8,5 +8,7 @@ functions:
       script: root-map.sh
       output:
       - storage_provider: minio.default
-        path: root-oscar/out
-
+        path: root-oscar/jobid
+        prefix:
+        - logs
+        - out
