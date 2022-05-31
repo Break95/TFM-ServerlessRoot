@@ -11,7 +11,7 @@ functions:
         path: root-oscar/mapper-jobs
       output:
       - storage_provider: minio.default
-        path: root-oscar/reducer-jobs
-      - storage_provider: minio.default
-        path: root-oscar/logs 
-
+        path: root-oscar
+        prefix:
+        - partial-results
+        - logs

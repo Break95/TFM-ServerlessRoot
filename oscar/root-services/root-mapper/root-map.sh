@@ -12,6 +12,9 @@ access_key=$(grep access_key /oscar/config/function_config.yaml | awk '{print $2
 secret_key=$(grep secret_key /oscar/config/function_config.yaml | awk '{print $2}')
 
 echo "La salida se guardara en ${TMP_OUTPUT_DIR}"
+echo "Creating partial results folder"
+mkdir "$TMP_OUTPUT_DIR/partial-results"
+mkdir "$TMP_OUTPUT_DIR/logs"
 python3 /opt/python-runner.py "$INPUT_FILE_PATH" "$TMP_OUTPUT_DIR" "$mapper_dir" "$endpoint" "$access_key" "$secret_key"
 echo "Python function ended"
 
