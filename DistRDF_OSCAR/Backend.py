@@ -2,7 +2,7 @@
 
 import os
 import json
-import requests
+#import requests
 import base64
 #import inspect
 import cloudpickle
@@ -15,7 +15,7 @@ from DistRDF import DataFrame
 from DistRDF import HeadNode
 from DistRDF.Backends import Base
 from DistRDF.Backends import Utils
-
+import io
 #try:
 #    import dask
 #    from dask.distributed import Client, LocalCluster, progress, get_worker
@@ -75,7 +75,9 @@ class OSCARBackend(Base.BaseBackend):
             list: A list representing the values of action nodes returned
             after computation (Map-Reduce).
         """
-        
+
+        # TODO: there is repeated code, refactor this.
+        '''
         def index_generator(num_jobs, reduction_factor):
             x = log(num_jobs) / log(reduction_factor)
             max_jobs = 2**floor(x) #Rename this variable, no longer holds max_jobs
@@ -114,65 +116,120 @@ class OSCARBackend(Base.BaseBackend):
                 indexes = indexes + sub_tree
 
             return indexes
+        '''
+
+        def index_generator2(ranges):
+            max_depth = ceil(log(len(ranges))/log(2))
+            init_ranges = [[rang.globalstart, 0, rang.globalend] for rang in ranges]
+            array_job = []
+            array_job.append(init_ranges)
+            depth = 1
+
+            while max_depth >= depth:
+                # Add new level
+                array_job.append([])
+
+                tmp_len = len(array_job[depth-1])
+                odd = False
+                if tmp_len % 2 != 0:
+                    tmp_len -= 1
+                    odd = True
+
+                for rang in range(0, tmp_len,2):
+                    t1 = array_job[depth-1][rang]
+                    t2 = array_job[depth-1][rang+1]
+                    array_job[depth].append([t1[0], t1[2], t2[2]])
+
+                # If odd add last element
+                if odd:
+                    array_job[depth].append(array_job[depth-1][-1])
+
+                depth += 1
+
+            reducers = array_job[1:]
+            flattened = [f'{job[0]}_{job[1]}-{job[1]}_{job[2]}' for elem in reducers for job in elem]
+            return flattened
+
         
         # Generate indexing.
         reduction_factor = 2
-        reduce_indices = index_generator(len(ranges), reduction_factor)
+        reduce_indices = index_generator2(ranges)
         print(reduce_indices)
 
-        omapper = str(base64.b64encode(cloudpickle.dumps(mapper)))
-        oreducer = str(base64.b64encode(cloudpickle.dumps(reducer)))
 
-        for rang in ranges:
-             orange = str(base64.b64encode(cloudpickle.dumps(rang)))
-             x = requests.post(self.client['endpoint'],
-                           headers= {
-                               "Accept": "application/json",
-                               "Authorization": "Bearer " + self.client['token']},
-                           json=json.dumps(  {'mapper': omapper,
-                                              'ranges': orange,
-                                              'reducer': oreducer,
-                                              'index': reduce_indices.pop(0),
-                                              'token': self.client['red_token']}))
-             print(x)                                 
-             
-
-        # Retrieve files
-        # Obtain final result
+        # Data Storage Connection
         mc = Minio(self.client['minio_endpoint'],
             access_key=self.client['minio_access'],
             secret_key=self.client['minio_secret'])
 
-        found = False
+        # Write mapper and reducer functions to bucket.
+        mapper_bytes = cloudpickle.dumps(mapper)
+        reducer_bytes =cloudpickle.dumps(reducer)
 
-        start = ranges[0].start
-        end = ranges[-1].end
+        mapper_stream = io.BytesIO(mapper_bytes)
+        reducer_stream = io.BytesIO(reducer_bytes)
+
+        mc.put_object('root-oscar',
+                      'functions/mapper',
+                      mapper_stream,
+                      length = len(mapper_bytes))
+        mc.put_object('root-oscar',
+                      'functions/reducer',
+                      reducer_stream,
+                      length = len(reducer_bytes))
+
+        is_tree_type = type(ranges[0]).__name__ == 'TreeRange'
+        attr_start = 'globalstart' if is_tree_type else 'start'
+        attr_end   = 'globalend'   if is_tree_type else 'end'
+
+        # Write reduction jobs.
+        #one_byte = io.BytesIO(b'\xff')
+        for reducer_job in reduce_indices:
+            mc.put_object('root-oscar',
+                          f'reducer-jobs/{reducer_job}',
+                          io.BytesIO(b'\xff'),
+                          length=1)
+
+        # Write mappers jobs.
+        for rang in ranges:
+            rang_bytes = cloudpickle.dumps(rang)
+            rang_stream = io.BytesIO(rang_bytes)
+            file_name = f'{getattr(rang, attr_start)}_{getattr(rang, attr_end)}'
+            mc.put_object('root-oscar',
+                          f'mapper-jobs/{file_name}',
+                          rang_stream,
+                          length = len(rang_bytes))
+
+        # Retrieve files
+        # Obtain final result
+        found = False
+        start = getattr(ranges[0], attr_start)
+        end = getattr(ranges[-1], attr_end)
+
         target_name = f'{start}_{end}'
+        print(f'Target Name: {target_name}')
         full_name = ''
         final_result = None
-        
+
+        # TODO: Include restAPI server to use webhook instead of polling.
         if mc.bucket_exists("root-oscar"):
             while not found:
-                files = mc.list_objects('root-oscar', 'out/',
+                files = mc.list_objects('root-oscar', 'partial-results/',
                              recursive=True)
-
 
                 for obj in files:
                     full_name = obj.object_name
                     file_name = full_name.split('/')[1]
-
+                    print(f'File name: {file_name}')
                     if target_name == file_name:
                             found = True
                             break
-                print(f'Waiting for final result, sleeping 1 second.')
+                print(f'Waiting for final result {file_name}, sleeping 1 second.')
                 sleep(1)
             
-            mc.fget_object('root-oscar', full_name, f'/tmp/{full_name}')
-            handle = open(f'/tmp/{full_name}', "rb")
-            final_result = cloudpickle.load(handle)
-
-            mc.remove_object('root-oscar', full_name)
-
+            result_response = mc.get_object('root-oscar',  f'partial-results/{target_name}')
+            result_bytes = result_response.data
+            final_result = cloudpickle.loads(result_bytes)
         else:
             print('Bucket does not exist.')
 
