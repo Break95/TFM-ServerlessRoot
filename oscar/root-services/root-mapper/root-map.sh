@@ -11,6 +11,8 @@ endpoint=$(grep endpoint /oscar/config/function_config.yaml | awk '{print $2}')
 access_key=$(grep access_key /oscar/config/function_config.yaml | awk '{print $2}')
 secret_key=$(grep secret_key /oscar/config/function_config.yaml | awk '{print $2}')
 
+pip3 list
+
 echo "La salida se guardara en ${TMP_OUTPUT_DIR}"
 echo "Creating partial results folder"
 mkdir "$TMP_OUTPUT_DIR/partial-results"

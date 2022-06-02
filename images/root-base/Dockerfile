@@ -16,6 +16,7 @@ RUN pip install numpy jupyter
 
 # Build ROOT
 RUN git clone https://github.com/root-project/root.git root_src
+#COPY DistRDF_OSCAR/* /root_src/bindings/experimental/distrdf/python/DistRDF/Backends/OSCAR/
 RUN mkdir root_build
 RUN cmake -Dgminimal=ON -Dasimage=ON -Ddev=ON \
           -Druntime_cxxmodules=ON -Dgnuinstall=ON -Dsonames=ON \
@@ -27,7 +28,12 @@ RUN cmake --build root_build -- install -j$(nproc)
 # Remove artifacts
 RUN rm -rf root_build root_src
 
+# Copy OSCAR Backend
+COPY DistRDF_OSCAR/* /usr/local/lib/root/DistRDF/Backends/OSCAR/
+
 # Change environment so that libraries are properly found
 RUN echo /usr/local/lib/root >> /etc/ld.so.conf && ldconfig
 ENV PYTHONPATH /usr/local/lib/root:$PYTHONPATH
 ENV CLING_STANDARD_PCH none
+
+RUN pip install minio cloudpickle
