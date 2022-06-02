@@ -28,6 +28,7 @@ class OSCARBackend(Base.BaseBackend):
     """OSCAR backend for distributed RDataFrame."""
 
     def __init__(self, oscarclient=None):
+        print('In init')
         super(OSCARBackend, self).__init__()
         # If the user didn't explicitly pass a Client instance, the argument
         # `OSCARclient` will be `None`. In this case, we create a default OSCAR
@@ -61,6 +62,8 @@ class OSCARBackend(Base.BaseBackend):
 
 
     def ProcessAndMerge(self, ranges, mapper, reducer):
+        print("In process and merge.")
+        print(ranges)
         """
         Performs map-reduce using Dask framework.
 
@@ -120,11 +123,11 @@ class OSCARBackend(Base.BaseBackend):
 
         def index_generator2(ranges):
             max_depth = ceil(log(len(ranges))/log(2))
-            init_ranges = [[rang.globalstart, 0, rang.globalend] for rang in ranges]
+            init_ranges = [[rang.id] * 4 for rang in ranges]
             array_job = []
             array_job.append(init_ranges)
             depth = 1
-
+            print('ey')
             while max_depth >= depth:
                 # Add new level
                 array_job.append([])
@@ -138,7 +141,7 @@ class OSCARBackend(Base.BaseBackend):
                 for rang in range(0, tmp_len,2):
                     t1 = array_job[depth-1][rang]
                     t2 = array_job[depth-1][rang+1]
-                    array_job[depth].append([t1[0], t1[2], t2[2]])
+                    array_job[depth].append([t1[0], t1[3], t2[0], t2[3]])
 
                 # If odd add last element
                 if odd:
@@ -147,7 +150,7 @@ class OSCARBackend(Base.BaseBackend):
                 depth += 1
 
             reducers = array_job[1:]
-            flattened = [f'{job[0]}_{job[1]}-{job[1]}_{job[2]}' for elem in reducers for job in elem]
+            flattened = [f'{job[0]}_{job[1]}-{job[2]}_{job[3]}' for elem in reducers for job in elem]
             return flattened
 
         
@@ -164,7 +167,7 @@ class OSCARBackend(Base.BaseBackend):
 
         # Write mapper and reducer functions to bucket.
         mapper_bytes = cloudpickle.dumps(mapper)
-        reducer_bytes =cloudpickle.dumps(reducer)
+        reducer_bytes = cloudpickle.dumps(reducer)
 
         mapper_stream = io.BytesIO(mapper_bytes)
         reducer_stream = io.BytesIO(reducer_bytes)
@@ -173,17 +176,13 @@ class OSCARBackend(Base.BaseBackend):
                       'functions/mapper',
                       mapper_stream,
                       length = len(mapper_bytes))
+
         mc.put_object('root-oscar',
                       'functions/reducer',
                       reducer_stream,
                       length = len(reducer_bytes))
 
-        is_tree_type = type(ranges[0]).__name__ == 'TreeRange'
-        attr_start = 'globalstart' if is_tree_type else 'start'
-        attr_end   = 'globalend'   if is_tree_type else 'end'
-
         # Write reduction jobs.
-        #one_byte = io.BytesIO(b'\xff')
         for reducer_job in reduce_indices:
             mc.put_object('root-oscar',
                           f'reducer-jobs/{reducer_job}',
@@ -194,7 +193,7 @@ class OSCARBackend(Base.BaseBackend):
         for rang in ranges:
             rang_bytes = cloudpickle.dumps(rang)
             rang_stream = io.BytesIO(rang_bytes)
-            file_name = f'{getattr(rang, attr_start)}_{getattr(rang, attr_end)}'
+            file_name = f'{rang.id}_{rang.id}'
             mc.put_object('root-oscar',
                           f'mapper-jobs/{file_name}',
                           rang_stream,
@@ -203,8 +202,8 @@ class OSCARBackend(Base.BaseBackend):
         # Retrieve files
         # Obtain final result
         found = False
-        start = getattr(ranges[0], attr_start)
-        end = getattr(ranges[-1], attr_end)
+        start = ranges[0].id
+        end = ranges[-1].id
 
         target_name = f'{start}_{end}'
         print(f'Target Name: {target_name}')
@@ -224,7 +223,7 @@ class OSCARBackend(Base.BaseBackend):
                     if target_name == file_name:
                             found = True
                             break
-                print(f'Waiting for final result {file_name}, sleeping 1 second.')
+                print(f'Waiting for final result {target_name}, sleeping 1 second.')
                 sleep(1)
             
             result_response = mc.get_object('root-oscar',  f'partial-results/{target_name}')
@@ -256,7 +255,5 @@ class OSCARBackend(Base.BaseBackend):
         #    `optimize_npartitions` function
         # 3. Set `npartitions` to 2
         npartitions = kwargs.pop("npartitions", self.optimize_npartitions())
-        headnode = HeadNode.get_headnode(npartitions, *args)
-        return DataFrame.RDataFrame(headnode, self)
-
-
+        headnode = HeadNode.get_headnode(self, npartitions, *args)
+        return DataFrame.RDataFrame(headnode)
