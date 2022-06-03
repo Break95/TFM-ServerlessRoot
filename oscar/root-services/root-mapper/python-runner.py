@@ -38,11 +38,7 @@ print(f'Mapper: {mapper}')
 result = mapper(rang)
 
 # Write Result
-is_tree_type = type(rang).__name__ == 'TreeRange'
-attr_start = 'globalstart' if is_tree_type else 'start'
-attr_end   = 'globalend'   if is_tree_type else 'end'
-
-file_name = f'{getattr(rang, attr_start)}_{getattr(rang, attr_end)}'
+file_name = f'{rang.id}_{rang.id}'
 print(f'File Name: {file_name}')
 
 # Update Tag.
