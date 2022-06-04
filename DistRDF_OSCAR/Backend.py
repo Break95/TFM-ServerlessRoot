@@ -28,7 +28,6 @@ class OSCARBackend(Base.BaseBackend):
     """OSCAR backend for distributed RDataFrame."""
 
     def __init__(self, oscarclient=None):
-        print('In init')
         super(OSCARBackend, self).__init__()
         # If the user didn't explicitly pass a Client instance, the argument
         # `OSCARclient` will be `None`. In this case, we create a default OSCAR
@@ -62,8 +61,6 @@ class OSCARBackend(Base.BaseBackend):
 
 
     def ProcessAndMerge(self, ranges, mapper, reducer):
-        print("In process and merge.")
-        print(ranges)
         """
         Performs map-reduce using Dask framework.
 
@@ -143,9 +140,9 @@ class OSCARBackend(Base.BaseBackend):
                     t2 = array_job[depth-1][rang+1]
                     array_job[depth].append([t1[0], t1[3], t2[0], t2[3]])
 
-                # If odd add last element
+                # If odd move last element of previous depth to next one.
                 if odd:
-                    array_job[depth].append(array_job[depth-1][-1])
+                    array_job[depth].append(array_job[depth-1].pop())
 
                 depth += 1
 

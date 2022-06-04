@@ -6,10 +6,10 @@ ranges = [
     # Index : Range
     [  0,100],
     [100,200],
-  #  [200,300],
-  #  [300,400],
-  #  [400,500],
-  #  [500,600],
+    [200,300],
+    [300,400],
+    [400,500],
+    [500,600],
   #  [600,700]
   #  [700,800]
 ]
@@ -37,7 +37,8 @@ while max_depth >= depth:
 
     # If odd add last elements.
     if odd:
-        array_job[depth].append(array_job[depth-1][-1])
+        array_job[depth].append(array_job[depth-1].pop())
+        #array_job[depth].append(array_job[depth-1][-1])
 
     depth += 1
 
