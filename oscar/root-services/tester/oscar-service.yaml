@@ -6,7 +6,12 @@ functions:
       cpu: '1.0'
       image: ghcr.io/break95/cowsay
       script: root-map.sh
+      input:
+      - storage_provider: minio.default
+        path: root-oscar/mapper-jobs
       output:
       - storage_provider: minio.default
-        path: root-oscar/out
-
+        path: root-oscar
+        prefix:
+        - partial-results
+        - benchmarks
