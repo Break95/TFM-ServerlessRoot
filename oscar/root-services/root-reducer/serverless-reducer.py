@@ -47,7 +47,7 @@ f.close()
 #
 partial_1_name = sys.argv[1].split('/')[-1]
 partial_2_name = ''
-for obj in mc.list_objects('root-oscar', 'reducer-jobs', recursive=True):
+for obj in mc.list_objects(bucket_name, 'reducer-jobs', recursive=True):
         tmp = obj.object_name.split('/')[1].split('-')
         if tmp[0] == partial_1_name:
                 partial_2_name = tmp[1]
@@ -63,7 +63,7 @@ print(partial_1_name)
 print(partial_2_name)
 
 # Get external part from bucket.
-partial_2_response = mc.get_object('root-oscar', f'partial-results/{partial_2_name}')
+partial_2_response = mc.get_object(bucket_name, f'partial-results/{partial_2_name}')
 partial_2_bytes = partial_2_response.data
 partial_2 = cloudpickle.loads(partial_2_bytes)
 
