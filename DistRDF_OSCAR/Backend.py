@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
 
 import os
-import json
-#import requests
-import base64
-#import inspect
-import cloudpickle
-from minio import Minio
 import time
 from math import log, ceil, floor
 from itertools import chain
@@ -16,12 +10,85 @@ from DistRDF import HeadNode
 from DistRDF.Backends import Base
 from DistRDF.Backends import Utils
 import io
-#try:
-#    import dask
-#    from dask.distributed import Client, LocalCluster, progress, get_worker
-#except ImportError:
-#    raise ImportError(("cannot import an OSCAR component. Refer to the OSCAR documentation "
-#                       "for installation instructions."))
+import uuid
+import asyncio
+
+
+try:
+        import requests
+        import cloudpickle
+        from minio import Minio
+except ImportError:
+        raise ImportError(("Cannot import library 'requests', 'cloudpickle' or 'minio. "))
+
+
+# TODO: move this to an utils.py file
+def service_yaml_to_http(bucket_name, function, benchmarking):
+        # TODO: read from yaml template instead of hardcoding the dictionary.
+
+        path = ''
+        if function == 'mapper':
+                path = f"{bucket_name}/mapper-jobs"
+        else:
+                path = f"{bucket_name}/partial-results"
+
+        prefixes = ['partial-results', 'logs']
+        if benchmarking == True:
+                prefixes.append('benchmarking')
+
+        #TODO: maybe encode this to base64?
+        script = ''
+        with open(f'/usr/local/lib/root/DistRDF/Backends/OSCAR/service-scripts/root-{function}.sh' ,'r') as script_file:
+                script = script_file.read()
+
+        http_body = {
+            # Name service strucure
+            # bucket_name-root-[mapper|reducer]
+            "name": f"{bucket_name}-{function}",
+            "memory": "1Gi",
+            "cpu": "1.0",
+            "image": f"ghcr.io/break95/root-{function}",
+            "alpine": False,
+            #"script": "root-map.sh",
+            "script": script,
+            "input": [
+                {
+                    "storage_provider": "minio.default",
+                    "path": path
+                }
+            ],
+            "output": [
+                {
+                    "storage_provider": "minio.default",
+                    "path": f"{bucket_name}",
+                    "prefix": prefixes
+                }
+            ]
+        }
+
+        if benchmarking:
+            http_body['output'][0]['prefix'].append('benchmarking')
+
+        return http_body
+
+async def create_service(bucket_name, benchmarking, service, oscar_endpoint, access, secret):
+        """
+        If needed, create services asynchronously at the beginning of the data frame  and
+        check for the results of the service creation in `process_and_merge` to avoid waiting
+        as much as possible.
+        """
+        print(f'Creating service {service} for {bucket_name}')
+        request_body = service_yaml_to_http(
+                bucket_name,
+                service,
+                benchmarking
+        )
+
+        return(requests.post(f"{oscar_endpoint}/system/services",
+                      auth=requests.auth.HTTPBasicAuth(access,
+                                                       secret),
+                      json=request_body,
+                      verify = False))
 
 
 class OSCARBackend(Base.BaseBackend):
@@ -33,8 +100,82 @@ class OSCARBackend(Base.BaseBackend):
         # `OSCARclient` will be `None`. In this case, we create a default OSCAR
         # client connected to a cluster instance with N worker processes, where
         # N is the number of cores on the local machine.
+
+        # Generate uuid to allow job concurrency.
+        oscarclient['uuid'] = uuid.uuid4()
+
+        # O
+        if oscarclient['benchmarking']:
+            oscarclient['bucket_name'] = f"{oscarclient['bucket_name']}-benchmark"
+
+        print(oscarclient['bucket_name'])
+
+        # Stablish Minio connection
+        #mc = Minio(self.client['minio_endpoint'],
+        #    access_key=self.client['minio_access'],
+        #    secret_key=self.client['minio_secret'])
+
+        # We need this version due to no ssl certificates.
+        import urllib3
+        mc = Minio(
+            oscarclient['minio_endpoint'],
+            oscarclient['minio_access'],
+            oscarclient['minio_secret'],
+            secure = False,
+            http_client=urllib3.ProxyManager( # Despite insecure request force https
+                f"https://{os.environ['minio_endpoint']}",
+                cert_reqs='CERT_NONE'
+            )
+        )
+
+        # Check if bucket exists.
+        if not mc.bucket_exists(oscarclient['bucket_name']):
+            print('Bucket does not exist. Trying to create it.')
+            if not oscarclient['oscar_endpoint']or not oscarclient['oscar_access'] or not oscarclient['oscar_secret']:
+                print('Missing OSCAR credentials. Please provide endpoint and access credentials')
+                return
+            # Deploy bucket and services.
+            try:
+                # Create bucket
+                print('Creating bucket...')
+                mc.make_bucket(f"{oscarclient['bucket_name']}")
+                print('Bucket created!')
+            except Exception as e:
+                print('Couldn\'t create bucket.')
+                print(e)
+                self.client = None
+                return
+
+            try:
+                print('Creating services...')
+                # Create services associated to bucket.
+                services = ['mapper', 'reducer']
+                oscarclient['tasks'] = []
+
+                for service in services:
+                        oscarclient['tasks'].append(asyncio.create_task(create_service(
+                                                    oscarclient['bucket_name'],
+                                                    oscarclient['benchmarking'],
+                                                    service,
+                                                    oscarclient['oscar_endpoint'],
+                                                    oscarclient['oscar_access'],
+                                                    oscarclient['oscar_secret']))
+                                     )
+
+                print('Done creating services!')
+            except Exception as e:
+                print('Exception creating services.')
+                print('Deleting associated bucket')
+                print(e)
+                raise
+
+        oscarclient['mc'] = mc
+
+        # TODO: Should we check if services exist??
+
         self.client = oscarclient #(oscarclient if oscarclient is not None else
             #    Client(LocalCluster(n_workers=os.cpu_count(), threads_per_worker=1, processes=True)))
+
 
     def optimize_npartitions(self):
         # For Serverless the decission process should be different, theoretically
@@ -60,6 +201,49 @@ class OSCARBackend(Base.BaseBackend):
             return self.MIN_NPARTITIONS
 
 
+    def benchmark_report(self, mc, bucket_name):
+        """
+        Generate perfomance report based on results of job.
+        """
+
+        bench_results = mc.list_objects(bucket_name, 'benchmarks/', recursive=True)
+
+        mappers = {}
+        reducers = {}
+
+        for obj in bench_results:
+            tmp = obj.object_name
+            print(tmp)
+            parts = tmp.split('/')[1].split('_')
+
+
+            bench_response = mc.get_object(bucket_name, tmp)
+            bench_bytes = bench_response.data
+            # Mapper
+            if parts[0] == parts[1]:
+                mappers[f'{parts[0]}_{parts[2]}'] = cloudpickle.loads(bench_bytes)['cpu_times']
+            # Reducer
+            else:
+                reducers[f'{tmp}'] = cloudpickle.loads(bench_bytes)['cpu_times']
+
+        mkeys = mappers.keys()
+
+        while len(mappers) != 0:
+                k1,v1 = mappers.popitem()
+                if k1.split('_')[-1] == 'start':
+                        k2 = f"{k1.split('_')[0]}_end"
+                        v2 = mappers.pop(k2)
+                else:
+                        k2 = f"{k1.split('_')[0]}_start"
+                        v2 = mappers.pop(k2)
+
+
+        print('Mappers')
+        print(mappers)
+        print('Reducers')
+        print(reducers)
+
+
     def ProcessAndMerge(self, ranges, mapper, reducer):
         """
         Performs map-reduce using Dask framework.
@@ -76,47 +260,7 @@ class OSCARBackend(Base.BaseBackend):
             after computation (Map-Reduce).
         """
 
-        # TODO: there is repeated code, refactor this.
-        '''
-        def index_generator(num_jobs, reduction_factor):
-            x = log(num_jobs) / log(reduction_factor)
-            max_jobs = 2**floor(x) #Rename this variable, no longer holds max_jobs
-            depth = ceil(x)
-
-            if x.is_integer():
-                remainder = 0
-            else:
-                remainder = num_jobs - max_jobs
-
-            indexes = [0]
-            for i in range(depth):
-                indexes = list(chain.from_iterable( [[elem + 1, 0] for elem in indexes] ))
-
-            last_tree_size = int(len(indexes)/2)
-
-            while remainder > 0:
-                x = log(remainder) / log(reduction_factor)
-                max_jobs = 2**floor(x)
-                depth = ceil(x)
-
-                # Remove right hand side.
-                indexes = indexes[0:last_tree_size]
-                last_tree_size += max_jobs
-
-                sub_tree = [0]
-
-                if x.is_integer():
-                    remainder = 0
-                else:
-                    remainder = remainder - max_jobs
-
-                for i in range(depth):
-                    sub_tree = list(chain.from_iterable( [[elem+1,0] for elem in sub_tree] ))
-
-                indexes = indexes + sub_tree
-
-            return indexes
-        '''
+        mc = self.client['mc']
 
         def index_generator2(ranges):
             max_depth = ceil(log(len(ranges))/log(2))
@@ -124,7 +268,6 @@ class OSCARBackend(Base.BaseBackend):
             array_job = []
             array_job.append(init_ranges)
             depth = 1
-            print('ey')
             while max_depth >= depth:
                 # Add new level
                 array_job.append([])
@@ -152,36 +295,40 @@ class OSCARBackend(Base.BaseBackend):
 
         
         # Generate indexing.
-        reduction_factor = 2
         reduce_indices = index_generator2(ranges)
         print(reduce_indices)
 
+        # Read bucket name
+        bucket_name = self.client['bucket_name']
+        print(bucket_name)
 
-        # Data Storage Connection
-        mc = Minio(self.client['minio_endpoint'],
-            access_key=self.client['minio_access'],
-            secret_key=self.client['minio_secret'])
+        # If we have created the services during client instantiation,
+        # check that they have been created succesfully.
+        if 'tasks' in self.client:
+                for task in self.client['tasks']:
+                        print(task)
 
         # Write mapper and reducer functions to bucket.
+        # TODO: refactor this for less repeated code.
         mapper_bytes = cloudpickle.dumps(mapper)
         reducer_bytes = cloudpickle.dumps(reducer)
 
         mapper_stream = io.BytesIO(mapper_bytes)
         reducer_stream = io.BytesIO(reducer_bytes)
 
-        mc.put_object('root-oscar',
+        mc.put_object(bucket_name,
                       'functions/mapper',
                       mapper_stream,
                       length = len(mapper_bytes))
 
-        mc.put_object('root-oscar',
+        mc.put_object(bucket_name,
                       'functions/reducer',
                       reducer_stream,
                       length = len(reducer_bytes))
 
         # Write reduction jobs.
         for reducer_job in reduce_indices:
-            mc.put_object('root-oscar',
+            mc.put_object(bucket_name,
                           f'reducer-jobs/{reducer_job}',
                           io.BytesIO(b'\xff'),
                           length=1)
@@ -191,7 +338,7 @@ class OSCARBackend(Base.BaseBackend):
             rang_bytes = cloudpickle.dumps(rang)
             rang_stream = io.BytesIO(rang_bytes)
             file_name = f'{rang.id}_{rang.id}'
-            mc.put_object('root-oscar',
+            mc.put_object(bucket_name,
                           f'mapper-jobs/{file_name}',
                           rang_stream,
                           length = len(rang_bytes))
@@ -208,9 +355,9 @@ class OSCARBackend(Base.BaseBackend):
         final_result = None
 
         # TODO: Include restAPI server to use webhook instead of polling.
-        if mc.bucket_exists("root-oscar"):
+        if mc.bucket_exists(bucket_name):
             while not found:
-                files = mc.list_objects('root-oscar', 'partial-results/',
+                files = mc.list_objects(bucket_name, 'partial-results/',
                              recursive=True)
 
                 for obj in files:
@@ -220,12 +367,15 @@ class OSCARBackend(Base.BaseBackend):
                     if target_name == file_name:
                             found = True
                             break
-                print(f'Waiting for final result {target_name}, sleeping 1 second.')
+                print(f'Waiting for final result {target_name}, sleeping 1 seconds.')
                 sleep(1)
             
-            result_response = mc.get_object('root-oscar',  f'partial-results/{target_name}')
+            result_response = mc.get_object(bucket_name,  f'partial-results/{target_name}')
             result_bytes = result_response.data
             final_result = cloudpickle.loads(result_bytes)
+
+            if self.client['benchmarking']:
+                     self.benchmark_report(mc, bucket_name)
         else:
             print('Bucket does not exist.')
 
@@ -254,3 +404,11 @@ class OSCARBackend(Base.BaseBackend):
         npartitions = kwargs.pop("npartitions", self.optimize_npartitions())
         headnode = HeadNode.get_headnode(self, npartitions, *args)
         return DataFrame.RDataFrame(headnode)
+
+
+    def bucket_cleanup():
+        """
+        More performance questions on deleting files starting by x. Instead
+        of simply whiping 'folder/bucket'.
+        """
+        pass
