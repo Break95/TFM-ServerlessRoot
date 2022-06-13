@@ -1,6 +1,5 @@
 #FROM rootproject/root:6.26.02-ubuntu22.04
-FROM ghcr.io/break95/root-base
+FROM ghcr.io/break95/root-base:latest
 
-COPY root-reduce.sh /opt/root-reduce.sh
-COPY serverless-reducer.py /opt/serverless-reducer.py
-
+COPY bench.py /opt/bench.py
+COPY python-runner.py /opt/python-runner.py

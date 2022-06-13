@@ -13,7 +13,7 @@ echo "La salida se guardara en ${TMP_OUT_DIR}/${FILE_NAME}"
 mkdir "$TMP_OUTPUT_DIR/partial-results"
 mkdir "$TMP_OUTPUT_DIR/logs"
 mkdir "$TMP_OUTPUT_DIR/benchmarks"
-python3 /opt/python-runner.py "$INPUT_FILE_PATH" "$TMP_OUTPUT_DIR" "$endpoint" "$access_key" "$secret_key" "$mapper_dir"
+python3 /opt/bench.py "$INPUT_FILE_PATH" "$TMP_OUTPUT_DIR" "$endpoint" "$access_key" "$secret_key" "$mapper_dir"
 echo "Python function ended"
 
 echo "Exiting root.sh"
