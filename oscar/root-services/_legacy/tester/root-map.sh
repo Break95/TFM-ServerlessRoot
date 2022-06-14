@@ -13,6 +13,7 @@ token=echo $(grep token /oscar/config/function_config.yaml | awk '{print $2}')
 access_key=echo $(grep access_key /oscar/config/function_config.yaml | awk '{print $2}')
 secret_key=echo $(grep secret_key /oscar/config/function_config.yaml | awk '{print $2}')
 
+python3 /root/psutil_test.py
 
 echo $token
 echo $access_key

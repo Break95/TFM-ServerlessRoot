@@ -1,10 +1,10 @@
 functions:
   oscar:
   - grycap-oscar:
-      name: root-mapper
-      memory: 2Gi
+      name: tester
+      memory: 250Mi
       cpu: '1.0'
-      image: ghcr.io/break95/root-mapper
+      image: ghcr.io/break95/cowsay
       script: root-map.sh
       input:
       - storage_provider: minio.default
@@ -14,4 +14,4 @@ functions:
         path: root-oscar
         prefix:
         - partial-results
-        - logs
+        - benchmarks

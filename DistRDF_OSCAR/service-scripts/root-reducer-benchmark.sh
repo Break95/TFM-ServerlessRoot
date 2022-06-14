@@ -12,8 +12,8 @@ secret_key=$(grep secret_key /oscar/config/function_config.yaml | awk '{print $2
 echo "La salida se guardara en ${TMP_OUT_DIR}/${FILE_NAME}"
 mkdir "$TMP_OUTPUT_DIR/partial-results"
 mkdir "$TMP_OUTPUT_DIR/logs"
-python3 /opt/serverless-reducer.py "$INPUT_FILE_PATH" "$TMP_OUTPUT_DIR" "$endpoint" "$access_key" "$secret_key" "$mapper_dir"
+mkdir "$TMP_OUTPUT_DIR/benchmarks"
+python3 /opt/bench.py "$INPUT_FILE_PATH" "$TMP_OUTPUT_DIR" "$endpoint" "$access_key" "$secret_key" "$mapper_dir"
 echo "Python function ended"
 
-echo "Exiting map.sh"
-
+echo "Exiting root.sh"
