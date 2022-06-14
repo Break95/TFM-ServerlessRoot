@@ -24,7 +24,7 @@ cpu_usage = []
 # long running mappers.
 # TODO: change polling to another strategy and also add call stack tracing.
 while mapper_p.poll() is None:
-    cpu_usage.append([mapper.cpu_percent(), reducer.memory_percent()])
+    cpu_usage.append([mapper.cpu_percent(), mapper.memory_percent()])
     sleep(0.5)
 
 bench_end = p.as_dict(attrs=p_attrs[1:])
