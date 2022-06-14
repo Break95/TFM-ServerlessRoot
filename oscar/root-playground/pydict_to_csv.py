@@ -49,7 +49,6 @@ headings_usage = [
 
 csv_row = headings_process
 job_id = sys.argv[1]
-print(job_id)
 
 csv_f_proc = open(f'{job_id}_process.csv' , 'w', newline='')
 proc_writer = csv.writer(csv_f_proc, delimiter='|')
