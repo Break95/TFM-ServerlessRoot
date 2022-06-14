@@ -7,11 +7,10 @@ import sys
 import uuid
 
 mapper_args = ['python3', '/opt/python-runner.py'] + sys.argv[1:]
-print(mapper_args)
 
 p = psutil.Process()
 p_attrs = ['create_time', 'cpu_times', 'io_counters',
-           'num_ctx_switches', 'memory_full_info', 'net_io_counters']
+           'num_ctx_switches', 'memory_full_info']
 
 bench_start = p.as_dict(attrs=p_attrs)
 
