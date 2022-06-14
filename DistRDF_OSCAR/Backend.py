@@ -13,43 +13,145 @@ import io
 import uuid
 import asyncio
 
-
 try:
-        import requests
-        import cloudpickle
-        from minio import Minio
+    import requests
+    import cloudpickle
+    from minio import Minio
 except ImportError:
-        raise ImportError(("Cannot import library 'requests', 'cloudpickle' or 'minio. "))
+    raise ImportError(("Cannot import library 'requests', 'cloudpickle' or 'minio. "))
+
+from requests.packages.urllib3.exceptions import InsecureRequestWarning
+
+requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+
+class OSCARBackend(Base.BaseBackend):
+    """OSCAR backend for distributed RDataFrame."""
+
+    def __init__(self, oscarclient=None):
+        super(OSCARBackend, self).__init__()
+        # If the user didn't explicitly pass a Client instance, the argument
+        # `OSCARclient` will be `None`. In this case, we create a default OSCAR
+        # client connected to a cluster instance with N worker processes, where
+        # N is the number of cores on the local machine.
+
+        self.client = oscarclient
+
+        # Generate uuid to allow job concurrency.
+        self.client['uuid'] = uuid.uuid4()
+
+        # O
+        if self.client['benchmarking']:
+            self.client['bucket_name'] = f"{self.client['bucket_name']}-{self.client['uuid']}-benchmark"
+        else:
+            self.client['bucket_name'] = f'{self.client["bucket_name"]}-{self.client["uuid"]}'
+        print(self.client['bucket_name'])
+
+        # Stablish Minio connection
+        # We need this version due to no ssl certificates.
+        import urllib3
+        mc = Minio(
+            self.client['minio_endpoint'],
+            self.client['minio_access'],
+            self.client['minio_secret'],
+            secure = False,
+            http_client=urllib3.ProxyManager( # Despite insecure request force https
+                f"https://{self.client['minio_endpoint']}",
+                cert_reqs='CERT_NONE'
+            )
+        )
+
+        self.client['mc'] = mc
+
+        # Check if bucket exists.
+        if not mc.bucket_exists(self.client['bucket_name']):
+            print('Bucket does not exist. Trying to create it.')
+            if not self.client['oscar_endpoint'] or not self.client['oscar_access'] or not self.client['oscar_secret']:
+                print('Missing OSCAR credentials. Please provide endpoint and access credentials')
+                return
+            # Create Bucket.
+            try:
+                # Create bucket
+                print('Creating bucket...')
+                mc.make_bucket(f"{self.client['bucket_name']}")
+                print('Bucket created!')
+            except Exception as e:
+                print('Couldn\'t create bucket.')
+                print(e)
+                self.client = None
+                return
+        else:
+            print('Bucket already exists.')
+
+        # TODO: Should we check if services exist??
+        # Create services.
+        self._service_creation()
 
 
-# TODO: move this to an utils.py file
-def service_yaml_to_http(bucket_name, function, benchmarking):
-        # TODO: read from yaml template instead of hardcoding the dictionary.
+    def _service_creation(self):
+        """
+        ASD
+        """
+        try:
+            print('Creating services...')
+            # Create services associated to bucket.
+            services = ['mapper', 'reducer']
+            self.client['tasks'] = []
+            self.client['services'] = []
 
+            for service in services:
+                    self.client['tasks'].append(asyncio.create_task(self._create_service(
+                            self.client['bucket_name'],
+                            self.client['benchmarking'],
+                            service,
+                            self.client['oscar_endpoint'],
+                            self.client['oscar_access'],
+                            self.client['oscar_secret']))
+                        )
+
+            print('Done creating services!')
+        except Exception as e:
+            print('Exception creating services.')
+            print('Deleting associated bucket')
+            print(e)
+            raise
+
+
+    def _service_yaml_to_http(self, function):
+        # TODO: read from yaml template instead of hardcoding the dictionary?
+        bucket_name = f'{self.client["bucket_name"]}'
+        print(bucket_name)
+
+        # Path were OSCAR will trigger the service.
         path = ''
         if function == 'mapper':
-                path = f"{bucket_name}/mapper-jobs"
+            path = f"{bucket_name}/mapper-jobs"
         else:
-                path = f"{bucket_name}/partial-results"
+            path = f"{bucket_name}/partial-results"
 
         prefixes = ['partial-results', 'logs']
+        script_suffix = ''
+        benchmarking = self.client['benchmarking']
         if benchmarking == True:
-                prefixes.append('benchmarking')
+            prefixes.append('benchmarks')
+            script_suffix = '-benchmark'
 
-        #TODO: maybe encode this to base64?
+        # TODO: maybe encode this to base64?
         script = ''
-        with open(f'/usr/local/lib/root/DistRDF/Backends/OSCAR/service-scripts/root-{function}.sh' ,'r') as script_file:
+        with open(f'/usr/local/lib/root/DistRDF/Backends/OSCAR/service-scripts/root-{function}{script_suffix}.sh' ,'r') as script_file:
                 script = script_file.read()
+
+        service_name = f"{function[0]}-{self.client['uuid']}"
+        self.client['services'].append(service_name)
 
         http_body = {
             # Name service strucure
             # bucket_name-root-[mapper|reducer]
-            "name": f"{bucket_name}-{function}",
+            #"name": f"{bucket_name}-{function}",
+            "name": service_name,
             "memory": "1Gi",
             "cpu": "1.0",
-            "image": f"ghcr.io/break95/root-{function}",
+            "image": f"ghcr.io/break95/root-{function}{script_suffix}",
             "alpine": False,
-            #"script": "root-map.sh",
             "script": script,
             "input": [
                 {
@@ -66,115 +168,27 @@ def service_yaml_to_http(bucket_name, function, benchmarking):
             ]
         }
 
+        # Also output to benchmarking folder if needed.
         if benchmarking:
             http_body['output'][0]['prefix'].append('benchmarking')
 
         return http_body
 
-async def create_service(bucket_name, benchmarking, service, oscar_endpoint, access, secret):
+
+    async def _create_service(self, bucket_name, benchmarking, service, oscar_endpoint, access, secret):
         """
         If needed, create services asynchronously at the beginning of the data frame  and
         check for the results of the service creation in `process_and_merge` to avoid waiting
         as much as possible.
         """
         print(f'Creating service {service} for {bucket_name}')
-        request_body = service_yaml_to_http(
-                bucket_name,
-                service,
-                benchmarking
-        )
+        request_body = self._service_yaml_to_http(service)
 
         return(requests.post(f"{oscar_endpoint}/system/services",
                       auth=requests.auth.HTTPBasicAuth(access,
                                                        secret),
                       json=request_body,
                       verify = False))
-
-
-class OSCARBackend(Base.BaseBackend):
-    """OSCAR backend for distributed RDataFrame."""
-
-    def __init__(self, oscarclient=None):
-        super(OSCARBackend, self).__init__()
-        # If the user didn't explicitly pass a Client instance, the argument
-        # `OSCARclient` will be `None`. In this case, we create a default OSCAR
-        # client connected to a cluster instance with N worker processes, where
-        # N is the number of cores on the local machine.
-
-        # Generate uuid to allow job concurrency.
-        oscarclient['uuid'] = uuid.uuid4()
-
-        # O
-        if oscarclient['benchmarking']:
-            oscarclient['bucket_name'] = f"{oscarclient['bucket_name']}-benchmark"
-
-        print(oscarclient['bucket_name'])
-
-        # Stablish Minio connection
-        #mc = Minio(self.client['minio_endpoint'],
-        #    access_key=self.client['minio_access'],
-        #    secret_key=self.client['minio_secret'])
-
-        # We need this version due to no ssl certificates.
-        import urllib3
-        mc = Minio(
-            oscarclient['minio_endpoint'],
-            oscarclient['minio_access'],
-            oscarclient['minio_secret'],
-            secure = False,
-            http_client=urllib3.ProxyManager( # Despite insecure request force https
-                f"https://{os.environ['minio_endpoint']}",
-                cert_reqs='CERT_NONE'
-            )
-        )
-
-        # Check if bucket exists.
-        if not mc.bucket_exists(oscarclient['bucket_name']):
-            print('Bucket does not exist. Trying to create it.')
-            if not oscarclient['oscar_endpoint']or not oscarclient['oscar_access'] or not oscarclient['oscar_secret']:
-                print('Missing OSCAR credentials. Please provide endpoint and access credentials')
-                return
-            # Deploy bucket and services.
-            try:
-                # Create bucket
-                print('Creating bucket...')
-                mc.make_bucket(f"{oscarclient['bucket_name']}")
-                print('Bucket created!')
-            except Exception as e:
-                print('Couldn\'t create bucket.')
-                print(e)
-                self.client = None
-                return
-
-            try:
-                print('Creating services...')
-                # Create services associated to bucket.
-                services = ['mapper', 'reducer']
-                oscarclient['tasks'] = []
-
-                for service in services:
-                        oscarclient['tasks'].append(asyncio.create_task(create_service(
-                                                    oscarclient['bucket_name'],
-                                                    oscarclient['benchmarking'],
-                                                    service,
-                                                    oscarclient['oscar_endpoint'],
-                                                    oscarclient['oscar_access'],
-                                                    oscarclient['oscar_secret']))
-                                     )
-
-                print('Done creating services!')
-            except Exception as e:
-                print('Exception creating services.')
-                print('Deleting associated bucket')
-                print(e)
-                raise
-
-        oscarclient['mc'] = mc
-
-        # TODO: Should we check if services exist??
-
-        self.client = oscarclient #(oscarclient if oscarclient is not None else
-            #    Client(LocalCluster(n_workers=os.cpu_count(), threads_per_worker=1, processes=True)))
 
 
     def optimize_npartitions(self):
@@ -205,43 +219,32 @@ class OSCARBackend(Base.BaseBackend):
         """
         Generate perfomance report based on results of job.
         """
+        import glob
 
+        # TODO: Filter duplicate reducers.
         bench_results = mc.list_objects(bucket_name, 'benchmarks/', recursive=True)
-
-        mappers = {}
-        reducers = {}
+        results = {'mapper': {},
+                   'reducer': {}}
 
         for obj in bench_results:
             tmp = obj.object_name
-            print(tmp)
             parts = tmp.split('/')[1].split('_')
-
 
             bench_response = mc.get_object(bucket_name, tmp)
             bench_bytes = bench_response.data
-            # Mapper
-            if parts[0] == parts[1]:
-                mappers[f'{parts[0]}_{parts[2]}'] = cloudpickle.loads(bench_bytes)['cpu_times']
-            # Reducer
+            bench_response.release_conn()
+
+            name = f'{parts[1]}_{parts[2]}'
+            if name in results[parts[0]]:
+                results[parts[0]][name] = results[parts[0]][name] | {parts[3]: cloudpickle.loads(bench_bytes)}
             else:
-                reducers[f'{tmp}'] = cloudpickle.loads(bench_bytes)['cpu_times']
+                results[parts[0]][name] = {parts[3]: cloudpickle.loads(bench_bytes)}
 
-        mkeys = mappers.keys()
-
-        while len(mappers) != 0:
-                k1,v1 = mappers.popitem()
-                if k1.split('_')[-1] == 'start':
-                        k2 = f"{k1.split('_')[0]}_end"
-                        v2 = mappers.pop(k2)
-                else:
-                        k2 = f"{k1.split('_')[0]}_start"
-                        v2 = mappers.pop(k2)
-
-
-        print('Mappers')
-        print(mappers)
-        print('Reducers')
-        print(reducers)
+        import json
+        file_name = f'{self.client["uuid"]}_bench_results'
+        with open(file_name, 'w') as result_file:
+            result_file.write(json.dumps(results))
+            print(f'Benchmark results written to {file_name}')
 
 
     def ProcessAndMerge(self, ranges, mapper, reducer):
@@ -310,6 +313,13 @@ class OSCARBackend(Base.BaseBackend):
 
         # Write mapper and reducer functions to bucket.
         # TODO: refactor this for less repeated code.
+        #for fun in [mapper, reducer]:
+        #        fun_bytes = cloudpickle.dumps(fun)
+        #        fun_stream = io.BytesIO(fun_bytes)
+        #        mc.put_object(bucket_name,
+        #                      f'function')
+
+
         mapper_bytes = cloudpickle.dumps(mapper)
         reducer_bytes = cloudpickle.dumps(reducer)
 
@@ -343,6 +353,7 @@ class OSCARBackend(Base.BaseBackend):
                           rang_stream,
                           length = len(rang_bytes))
 
+
         # Retrieve files
         # Obtain final result
         found = False
@@ -354,30 +365,35 @@ class OSCARBackend(Base.BaseBackend):
         full_name = ''
         final_result = None
 
-        # TODO: Include restAPI server to use webhook instead of polling.
-        if mc.bucket_exists(bucket_name):
-            while not found:
-                files = mc.list_objects(bucket_name, 'partial-results/',
+        # TODO: Change this for a call to _progress()
+        from IPython.display import clear_output
+
+        while not found:
+            files = mc.list_objects(bucket_name, 'partial-results/',
                              recursive=True)
 
-                for obj in files:
-                    full_name = obj.object_name
-                    file_name = full_name.split('/')[1]
-                    print(f'File name: {file_name}')
-                    if target_name == file_name:
-                            found = True
-                            break
-                print(f'Waiting for final result {target_name}, sleeping 1 seconds.')
-                sleep(1)
-            
-            result_response = mc.get_object(bucket_name,  f'partial-results/{target_name}')
-            result_bytes = result_response.data
-            final_result = cloudpickle.loads(result_bytes)
+            clear_output(wait=True)
 
-            if self.client['benchmarking']:
-                     self.benchmark_report(mc, bucket_name)
-        else:
-            print('Bucket does not exist.')
+            for obj in files:
+                full_name = obj.object_name
+                file_name = full_name.split('/')[1]
+                print(f'File name: {file_name}')
+                if target_name == file_name:
+                        found = True
+                        break
+
+            print(f'Waiting for final result {target_name}, sleeping 10 seconds.', flush=True)
+            sleep(10)
+            
+        result_response = mc.get_object(bucket_name,  f'partial-results/{target_name}')
+        result_bytes = result_response.data
+        final_result = cloudpickle.loads(result_bytes)
+
+        if self.client['benchmarking']:
+                self.benchmark_report(mc, bucket_name)
+
+        # Cleanup bucket and asociated services.
+        self._cleanup()
 
         return final_result
 
@@ -406,9 +422,45 @@ class OSCARBackend(Base.BaseBackend):
         return DataFrame.RDataFrame(headnode)
 
 
-    def bucket_cleanup():
+    def _cleanup(self):
         """
         More performance questions on deleting files starting by x. Instead
         of simply whiping 'folder/bucket'.
+        """
+        from minio.deleteobjects import DeleteObject
+        # Clean bucket data
+        delete_obj_list = map(lambda x: DeleteObject(x.object_name),
+                              self.client['mc'].list_objects(self.client['bucket_name'],
+                                                             recursive=True))
+
+        print('Deleting objects.')
+        errors = self.client['mc'].remove_objects(self.client['bucket_name'], delete_obj_list)
+
+        for error in errors:
+            print(error)
+
+        try:
+            self.client['mc'].remove_bucket(self.client['bucket_name'])
+            print('Bucket Deleted.')
+        except Exception as e:
+            print('Couldn\'t delete bucket.')
+            print(e)
+
+        # Clean services from OSCAR.
+        print('Deleting services')
+        if 'services' in self.client:
+            for service in self.client['services']:
+                print(service)
+                print(requests.delete(
+                    f"{self.client['oscar_endpoint']}/system/services/{service}",
+                    auth=requests.auth.HTTPBasicAuth(
+                         self.client['oscar_access'],
+                         self.client['oscar_secret']),
+                    verify = False))
+
+
+    def _progress(self, start, end):
+        """
+        Print progress of running job.
         """
         pass
