@@ -13,12 +13,13 @@ p = psutil.Process()
 p_attrs = ['create_time', 'cpu_times', 'io_counters',
            'num_ctx_switches', 'memory_full_info']
 
-bench_start = p.as_dict(attrs=p_attrs)
+#bench_start = p.as_dict(attrs=p_attrs)
 net_start = psutil.net_io_counters()
 
 # Call to actual process.
 mapper_p = psutil.Popen(mapper_args)
 mapper = psutil.Process(mapper_p.pid)
+bench_start = mapper.as_dict(attrs=p_attrs)
 
 cpu_usage = []
 # TODO: Write directly to file to avoid high memory usage in case of
