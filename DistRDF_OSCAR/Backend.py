@@ -226,10 +226,11 @@ class OSCARBackend(Base.BaseBackend):
         results = {'mapper': {},
                    'reducer': {}}
 
+        reducer_counts = {}
         for obj in bench_results:
             tmp = obj.object_name
             parts = tmp.split('/')[1].split('_')
-            print(parts)
+
             bench_response = mc.get_object(bucket_name, tmp)
             bench_bytes = bench_response.data
             bench_response.release_conn()
@@ -241,8 +242,26 @@ class OSCARBackend(Base.BaseBackend):
                 results[parts[0]][name] = {parts[3]: cloudpickle.loads(bench_bytes)}
 
             # Add working node
-            print(parts)
             results[parts[0]][name] = results[parts[0]][name] | {'node': parts[5]}
+
+            # Check for repeated reduced calls.
+            # For each write to bucket we produce a reducer so every reducer
+            # (i.e. 0_1) is called two times. Producing a total of 10 files:
+            # [start, end, net_start, net_end, usage] * 2.
+            if parts[0] == 'reducer':
+                print(name)
+                print(reducer_counts)
+                if name in reducer_counts:
+                    reducer_counts[name] = reducer_counts[name] + 1
+                else:
+                    reducer_counts[name] = 1
+
+        print(reducer_counts)
+
+        for key in reducer_counts:
+            #if (reducer_counts[key] /10) > 1:
+            #    print(f'{int(reducer_counts[key]/5) - 2} extra reducers invoked for for ')
+            print(f'Reducer {key} count: {reducer_counts[key] / 5}')
 
         import json # For some reason this in necessary.
         self.report_to_csv(json.loads(json.dumps(results)))
