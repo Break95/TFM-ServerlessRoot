@@ -5,6 +5,7 @@ import cloudpickle
 from time import sleep
 import sys
 import uuid
+import os
 
 reducer_args = ['python3', '/opt/python-runner.py'] + sys.argv[1:]
 
@@ -34,11 +35,12 @@ net_end = psutil.net_io_counters()
 file_name = sys.argv[1].split('/')[-1]
 ts = uuid.uuid1()
 
-f_bs = open(f'{sys.argv[2]}/benchmarks/reducer_{file_name}_start_{ts}', 'wb')
-f_be = open(f'{sys.argv[2]}/benchmarks/reducer_{file_name}_end_{ts}', 'wb')
-f_cp = open(f'{sys.argv[2]}/benchmarks/reducer_{file_name}_cpupercent_{ts}', 'wb')
-f_ns = open(f'{sys.argv[2]}/benchmarks/reducer_{file_name}_netiost_{ts}', 'wb')
-f_ne = open(f'{sys.argv[2]}/benchmarks/reducer_{file_name}_netioend_{ts}', 'wb')
+node = os.environ['RESOURCE_ID']
+f_bs = open(f'{sys.argv[2]}/benchmarks/reducer_{file_name}_start_{ts}_{node}', 'wb')
+f_be = open(f'{sys.argv[2]}/benchmarks/reducer_{file_name}_end_{ts}_{node}', 'wb')
+f_cp = open(f'{sys.argv[2]}/benchmarks/reducer_{file_name}_cpupercent_{ts}_{node}', 'wb')
+f_ns = open(f'{sys.argv[2]}/benchmarks/reducer_{file_name}_netiost_{ts}_{node}', 'wb')
+f_ne = open(f'{sys.argv[2]}/benchmarks/reducer_{file_name}_netioend_{ts}_{node}', 'wb')
 
 f_bs.write(cloudpickle.dumps(bench_start))
 f_be.write(cloudpickle.dumps(bench_end))

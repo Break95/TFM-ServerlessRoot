@@ -229,7 +229,7 @@ class OSCARBackend(Base.BaseBackend):
         for obj in bench_results:
             tmp = obj.object_name
             parts = tmp.split('/')[1].split('_')
-
+            print(parts)
             bench_response = mc.get_object(bucket_name, tmp)
             bench_bytes = bench_response.data
             bench_response.release_conn()
@@ -240,7 +240,11 @@ class OSCARBackend(Base.BaseBackend):
             else:
                 results[parts[0]][name] = {parts[3]: cloudpickle.loads(bench_bytes)}
 
-        import json
+            # Add working node
+            print(parts)
+            results[parts[0]][name] = results[parts[0]][name] | {'node': parts[5]}
+
+        import json # For some reason this in necessary.
         self.report_to_csv(json.loads(json.dumps(results)))
         #import json
         #file_name = f'{self.client["uuid"]}_bench_results'
@@ -280,11 +284,14 @@ class OSCARBackend(Base.BaseBackend):
             'net_errin', 'net_errout', 'net_dropin', 'net_dropout',
 
             # Create time (only taken on start)
-            'create_time'
+            'create_time',
+
+            # Cluster node in which the function has been executed.
+            'node'
         ]
 
         headings_usage = [
-            'function', 'id', 'time', 'cpu_percent', 'mem_percent'
+            'function', 'id', 'time', 'cpu_percent', 'mem_percent', 'node'
         ]
 
         csv_row = headings_process
@@ -320,13 +327,15 @@ class OSCARBackend(Base.BaseBackend):
                         csv_row = csv_row + data_dict[fun][id]['netioend']
                         csv_row = csv_row + [0]
 
+                    csv_row = csv_row + [data_dict[fun][id]['node']]
+
                     proc_writer.writerow(csv_row)
 
                 # Usage
                 ts = 0.0
                 csv_row = csv_id
                 for snapshot in data_dict[fun][id]['cpupercent']:
-                    csv_row = csv_id + [ts] + snapshot
+                    csv_row = csv_id + [ts] + snapshot + [data_dict[fun][id]['node']]
                     ts += 0.5
                     usage_writer.writerow(csv_row)
 
