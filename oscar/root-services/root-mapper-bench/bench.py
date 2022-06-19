@@ -6,7 +6,7 @@ from time import sleep
 import sys
 import uuid
 import os
-
+import datetime
 mapper_args = ['python3', '/opt/python-runner.py'] + sys.argv[1:]
 
 p = psutil.Process()
@@ -19,7 +19,9 @@ net_start = psutil.net_io_counters()
 # Call to actual process.
 mapper_p = psutil.Popen(mapper_args)
 mapper = psutil.Process(mapper_p.pid)
+
 bench_start = mapper.as_dict(attrs=p_attrs)
+bench_end = bench_start
 
 cpu_usage = []
 # TODO: Write directly to file to avoid high memory usage in case of
@@ -27,10 +29,18 @@ cpu_usage = []
 # TODO: change polling to another strategy and also add call stack tracing.
 while mapper_p.poll() is None:
     cpu_usage.append([mapper.cpu_percent(), mapper.memory_percent()])
+
+    tmp = mapper.as_dict(attrs=p_attrs[1:])
+
+    # Check the process has not ended while reading the process metrics.
+    if tmp['memory_full_info'] is not None:
+        bench_end = tmp
+
     sleep(0.5)
 
-bench_end = p.as_dict(attrs=p_attrs[1:])
 net_end = psutil.net_io_counters()
+
+print(f'Writing benchmarks {datetime.datetime.now()}')
 
 #Write benchmarks to files.
 file_name = sys.argv[1].split('/')[-1]
@@ -54,3 +64,6 @@ f_be.close()
 f_cp.close()
 f_ns.close()
 f_ne.close()
+
+
+print(f'Done writing benchmarks {datetime.datetime.now()}')

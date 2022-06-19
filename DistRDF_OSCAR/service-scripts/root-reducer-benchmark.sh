@@ -3,6 +3,8 @@
 echo "SCRIPT: Invoked reduce function"
 echo "$INPUT_FILE_PATH"
 
+lscpu
+
 # Get minio credentials from ConfigMap
 mapper_dir=$(grep -m 1 path: /oscar/config/function_config.yaml | awk '{print $2}') # Used to get bucket name
 endpoint=$(grep endpoint /oscar/config/function_config.yaml | awk '{print $2}')

@@ -12,6 +12,7 @@ import io
 import uuid
 import asyncio
 import csv
+from copy import deepcopy
 
 try:
     import requests
@@ -34,11 +35,11 @@ class OSCARBackend(Base.BaseBackend):
         # client connected to a cluster instance with N worker processes, where
         # N is the number of cores on the local machine.
 
-        self.client = oscarclient
+        self.client =  deepcopy(oscarclient)
 
         # Generate uuid to allow job concurrency.
         self.client['uuid'] = uuid.uuid4()
-
+        #print(f'Info_{oscarclient["node_count"]}_{self.client["uuid"]}')
         # O
         if self.client['benchmarking']:
             self.client['bucket_name'] = f"{self.client['bucket_name']}-{self.client['uuid']}-benchmark"
@@ -99,13 +100,13 @@ class OSCARBackend(Base.BaseBackend):
             self.client['services'] = []
 
             for service in services:
-                    self.client['tasks'].append(asyncio.create_task(self._create_service(
+                    self.client['tasks'].append(self._create_service(
                             self.client['bucket_name'],
                             self.client['benchmarking'],
                             service,
                             self.client['oscar_endpoint'],
                             self.client['oscar_access'],
-                            self.client['oscar_secret']))
+                            self.client['oscar_secret'])
                         )
 
             print('Done creating services!')
@@ -148,8 +149,8 @@ class OSCARBackend(Base.BaseBackend):
             # bucket_name-root-[mapper|reducer]
             #"name": f"{bucket_name}-{function}",
             "name": service_name,
-            "memory": "1Gi",
-            "cpu": "1.0",
+            "memory": "3Gi",
+            "cpu": "0.98",
             "image": f"ghcr.io/break95/root-{function}{script_suffix}",
             "alpine": False,
             "script": script,
@@ -175,7 +176,7 @@ class OSCARBackend(Base.BaseBackend):
         return http_body
 
 
-    async def _create_service(self, bucket_name, benchmarking, service, oscar_endpoint, access, secret):
+    def _create_service(self, bucket_name, benchmarking, service, oscar_endpoint, access, secret):
         """
         If needed, create services asynchronously at the beginning of the data frame  and
         check for the results of the service creation in `process_and_merge` to avoid waiting
@@ -249,19 +250,17 @@ class OSCARBackend(Base.BaseBackend):
             # (i.e. 0_1) is called two times. Producing a total of 10 files:
             # [start, end, net_start, net_end, usage] * 2.
             if parts[0] == 'reducer':
-                print(name)
-                print(reducer_counts)
                 if name in reducer_counts:
                     reducer_counts[name] = reducer_counts[name] + 1
                 else:
                     reducer_counts[name] = 1
 
-        print(reducer_counts)
+        #print(reducer_counts)
 
-        for key in reducer_counts:
+        #for key in reducer_counts:
             #if (reducer_counts[key] /10) > 1:
             #    print(f'{int(reducer_counts[key]/5) - 2} extra reducers invoked for for ')
-            print(f'Reducer {key} count: {reducer_counts[key] / 5}')
+            #print(f'Reducer {key} count: {reducer_counts[key] / 5}')
 
         import json # For some reason this in necessary.
         self.report_to_csv(json.loads(json.dumps(results)))
@@ -460,6 +459,7 @@ class OSCARBackend(Base.BaseBackend):
 
         # Write mappers jobs.
         for rang in ranges:
+            print(f'{rang.id}   {rang.start}   {rang.end}')
             rang_bytes = cloudpickle.dumps(rang)
             rang_stream = io.BytesIO(rang_bytes)
             file_name = f'{rang.id}_{rang.id}'
@@ -483,21 +483,22 @@ class OSCARBackend(Base.BaseBackend):
         # TODO: Change this for a call to _progress()
         from IPython.display import clear_output
 
+        print(f'Waiting for final result {target_name}.')
         while not found:
             files = mc.list_objects(bucket_name, 'partial-results/',
                              recursive=True)
 
-            clear_output(wait=True)
+            #clear_output(wait=True)
 
             for obj in files:
                 full_name = obj.object_name
                 file_name = full_name.split('/')[1]
-                print(f'File name: {file_name}')
+                #print(f'File name: {file_name}')
                 if target_name == file_name:
                         found = True
                         break
 
-            print(f'Waiting for final result {target_name}, sleeping 10 seconds.', flush=True)
+            #print(f'Waiting for final result {target_name}, sleeping 10 seconds.', flush=True)
             sleep(10)
             
         result_response = mc.get_object(bucket_name,  f'partial-results/{target_name}')
@@ -508,7 +509,7 @@ class OSCARBackend(Base.BaseBackend):
                 self.benchmark_report(mc, bucket_name)
 
         # Cleanup bucket and asociated services.
-        self._cleanup()
+        #self._cleanup()
 
         return final_result
 

@@ -19,7 +19,9 @@ net_start = psutil.net_io_counters()
 # Call to actual process.
 reducer_p = psutil.Popen(reducer_args)
 reducer = psutil.Process(reducer_p.pid)
+
 bench_start = reducer.as_dict(attrs=p_attrs)
+bench_end = bench_start
 
 cpu_usage = []
 # TODO: Write directly to file to avoid high memory usage in case of
@@ -27,9 +29,15 @@ cpu_usage = []
 # TODO: change polling to another strategy and also add call stack tracing.
 while reducer_p.poll() is None:
     cpu_usage.append([reducer.cpu_percent(), reducer.memory_percent()])
+
+    tmp = reducer.as_dict(attrs=p_attrs[1:])
+
+    # Check the process has not ended while reading the process metrics.
+    if tmp['memory_full_info'] is not None:
+        bench_end = tmp
+
     sleep(0.5)
 
-bench_end = reducer.as_dict(attrs=p_attrs[1:])
 net_end = psutil.net_io_counters()
 
 #Write benchmarks to files.

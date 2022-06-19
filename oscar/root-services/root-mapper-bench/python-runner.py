@@ -4,7 +4,7 @@ import cloudpickle
 import ROOT
 import urllib3
 from minio import Minio
-
+import datetime
 
 rang = None
 f = open(sys.argv[1], 'rb')
@@ -22,20 +22,20 @@ mc = Minio(endpoint=sys.argv[4][8:],
 
 # Bucket job id
 bucket_name = sys.argv[3].split('/')[0]
-print(f'Bucket Name: {bucket_name}')
+print(f'Bucket Name: {bucket_name}   -  {datetime.datetime.now()}')
 
 # Get mapper function from Bucket.
 mapper_response = mc.get_object(bucket_name, 'functions/mapper')
 mapper_bytes = mapper_response.data
 mapper_response.release_conn()
 mapper = cloudpickle.loads(mapper_bytes)
-print(f'Mapper: {mapper}')
+print(f'Mapper: {mapper}  -  {datetime.datetime.now()}')
 
 result = mapper(rang)
 
 # Write Result
 file_name = f'{rang.id}_{rang.id}'
-print(f'File Name: {file_name}')
+print(f'File Name: {file_name} - {datetime.datetime.now()}')
 
 
 result_bytes = cloudpickle.dumps(result)
@@ -43,4 +43,4 @@ f = open(f'{sys.argv[2]}/partial-results/{file_name}', 'wb')
 f.write(result_bytes)
 f.close()
 
-print('Result written to Bucket.')
+print(f'Result written to Bucket. - {datetime.datetime.now()}')

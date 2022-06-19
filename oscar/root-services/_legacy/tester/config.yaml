@@ -1,31 +1,10 @@
-name: tester
-memory: 250Mi
-cpu: "1.0" 
-total_memory: "" 
-total_cpu: "" 
-synchronous: 
-  min_scale: 0 
-  max_scale: 0 
-log_level: INFO 
-image: ghcr.io/break95/cowsay 
-alpine: false 
-token: c7ea9df3644cd59879dbaa7dd11be769238ac6d24b7ca1f17811d7be160ce10b 
-input: [] 
+name: root-tester
+memory: 3Gi
+cpu: "0.98"
+image: ghcr.io/break95/root-test-benchmark
+alpine: false
+input: []
+script: script.sh
 output: 
 - storage_provider: minio.default 
-  path: root-oscar/out 
-environment: 
-  Variables: {} 
-annotations: {} 
-labels: 
-  applicationId: tester 
-  oscar_service: tester 
-  queue: root.oscar-queue.tester 
-storage_providers: 
-  minio: 
-    default: 
-      endpoint: https://minio.busy-jackson2.im.grycap.net 
-      verify: true 
-      access_key: minio 
-      secret_key: 25BbLEYKlVP97g 
-      region: us-east-1
+  path: root-test/out

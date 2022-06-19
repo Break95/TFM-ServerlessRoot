@@ -5,6 +5,8 @@ echo "$INPUT_FILE_PATH"
 
 echo 'Davix.GSI.CACheck: n' > .rootrc
 
+#iostat
+
 # Pass the function string as parameter. A more verastile alternative
 # and future proof is to open the file inside the python script and
 # parse it there.
