@@ -143,13 +143,14 @@ class OSCARBackend(Base.BaseBackend):
 
         service_name = f"{function[0]}-{self.client['uuid']}"
         self.client['services'].append(service_name)
-
+        print('CPU = 0.98')
         http_body = {
             # Name service strucure
             # bucket_name-root-[mapper|reducer]
             #"name": f"{bucket_name}-{function}",
             "name": service_name,
             "memory": "3Gi",
+            #"cpu": "0.98",
             "cpu": "0.98",
             "image": f"ghcr.io/break95/root-{function}{script_suffix}",
             "alpine": False,
@@ -272,8 +273,9 @@ class OSCARBackend(Base.BaseBackend):
 
 
     def report_to_csv(self, data_dict):
-        job_id = self.client['uuid']
-
+        #job_id = self.client['uuid']
+        job_id = self.client['mapper_count']
+        folder = '' if self.client['folder'] is None else f'{self.client["folder"]}/'
         # Generate CSV
         delimiter= '|'
         headings_process = [
@@ -314,12 +316,12 @@ class OSCARBackend(Base.BaseBackend):
 
         csv_row = headings_process
 
-        csv_f_proc = open(f'{job_id}_process.csv' , 'w', newline='')
+        csv_f_proc = open(f'{folder}{job_id}_process.csv' , 'w', newline='')
         proc_writer = csv.writer(csv_f_proc, delimiter='|')
         proc_writer.writerow(headings_process)
         print(f'{job_id}_process.csv')
 
-        csv_f_usage = open(f'{job_id}_usage.csv', 'w', newline='')
+        csv_f_usage = open(f'{folder}{job_id}_usage.csv', 'w', newline='')
         usage_writer = csv.writer(csv_f_usage, delimiter='|')
         usage_writer.writerow(headings_usage)
         print(f'{job_id}_usage.csv')
@@ -509,7 +511,7 @@ class OSCARBackend(Base.BaseBackend):
                 self.benchmark_report(mc, bucket_name)
 
         # Cleanup bucket and asociated services.
-        #self._cleanup()
+        self._cleanup()
 
         return final_result
 
