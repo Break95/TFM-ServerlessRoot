@@ -25,6 +25,8 @@ from requests.packages.urllib3.exceptions import InsecureRequestWarning
 
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
+import ROOT
+
 class OSCARBackend(Base.BaseBackend):
     """OSCAR backend for distributed RDataFrame."""
 
@@ -96,6 +98,7 @@ class OSCARBackend(Base.BaseBackend):
             print('Creating services...')
             # Create services associated to bucket.
             services = ['mapper', 'reducer']
+            #services = ['mapper']
             self.client['tasks'] = []
             self.client['services'] = []
 
@@ -130,7 +133,7 @@ class OSCARBackend(Base.BaseBackend):
             path = f"{bucket_name}/partial-results"
 
         prefixes = ['partial-results', 'logs']
-        script_suffix = ''
+        script_suffix = '-benchmark'
         benchmarking = self.client['benchmarking']
         if benchmarking == True:
             prefixes.append('benchmarks')
@@ -143,15 +146,13 @@ class OSCARBackend(Base.BaseBackend):
 
         service_name = f"{function[0]}-{self.client['uuid']}"
         self.client['services'].append(service_name)
-        print('CPU = 0.98')
         http_body = {
             # Name service strucure
             # bucket_name-root-[mapper|reducer]
             #"name": f"{bucket_name}-{function}",
             "name": service_name,
             "memory": "3Gi",
-            #"cpu": "0.98",
-            "cpu": "0.98",
+            "cpu": self.client['cpu_val'],
             "image": f"ghcr.io/break95/root-{function}{script_suffix}",
             "alpine": False,
             "script": script,
@@ -169,6 +170,8 @@ class OSCARBackend(Base.BaseBackend):
                 }
             ]
         }
+
+        print(f'CPU: {http_body["cpu"]}')
 
         # Also output to benchmarking folder if needed.
         if benchmarking:
@@ -217,23 +220,28 @@ class OSCARBackend(Base.BaseBackend):
             return self.MIN_NPARTITIONS
 
 
-    def benchmark_report(self, mc, bucket_name):
+    def benchmark_report(self):
         """
         Generate perfomance report based on results of job.
         """
         import glob
 
         # TODO: Filter duplicate reducers.
-        bench_results = mc.list_objects(bucket_name, 'benchmarks/', recursive=True)
+        bench_results = self.client['mc'].list_objects(self.client['bucket_name'],
+                                                        'benchmarks/',
+                                                        recursive=True)
         results = {'mapper': {},
                    'reducer': {}}
 
         reducer_counts = {}
+
+        # Get benchmark results from MINIO.
         for obj in bench_results:
             tmp = obj.object_name
             parts = tmp.split('/')[1].split('_')
 
-            bench_response = mc.get_object(bucket_name, tmp)
+            bench_response = self.client['mc'].get_object(self.client['bucket_name'],
+                                                          tmp)
             bench_bytes = bench_response.data
             bench_response.release_conn()
 
@@ -256,8 +264,6 @@ class OSCARBackend(Base.BaseBackend):
                 else:
                     reducer_counts[name] = 1
 
-        #print(reducer_counts)
-
         #for key in reducer_counts:
             #if (reducer_counts[key] /10) > 1:
             #    print(f'{int(reducer_counts[key]/5) - 2} extra reducers invoked for for ')
@@ -265,11 +271,6 @@ class OSCARBackend(Base.BaseBackend):
 
         import json # For some reason this in necessary.
         self.report_to_csv(json.loads(json.dumps(results)))
-        #import json
-        #file_name = f'{self.client["uuid"]}_bench_results'
-        #with open(file_name, 'w') as result_file:
-        #    result_file.write(json.dumps(results))
-        #    print(f'Benchmark results written to {file_name}')
 
 
     def report_to_csv(self, data_dict):
@@ -362,6 +363,13 @@ class OSCARBackend(Base.BaseBackend):
         csv_f_proc.close()
         csv_f_usage.close()
 
+        # Write time to plot.
+        csv_ttp = open(f'{folder}{job_id}_ttp.csv', 'w', newline='')
+        ttp_writer = csv.writer(csv_ttp, delimiter='|')
+        ttp_writer.writerow(['ttp'])
+        ttp_writer.writerow([str(self.client['ttp'])])
+        csv_ttp.close()
+
 
     def ProcessAndMerge(self, ranges, mapper, reducer):
         """
@@ -379,7 +387,97 @@ class OSCARBackend(Base.BaseBackend):
             after computation (Map-Reduce).
         """
 
-        mc = self.client['mc']
+        # NOTE: We check for the services to be ready before starting the
+        # stopwatch as in a production implementation this functions should be ready
+        # before hand.
+        # If we have created the services during client instantiation,
+        # check that they have been created succesfully.
+        if 'tasks' in self.client:
+                for task in self.client['tasks']:
+                        print(task)
+
+        # Start timer
+        print('Starting timer')
+        t = ROOT.TStopwatch()
+
+        # Set up mapper function.
+        self._mapper_setup(mapper)
+
+        # Set up reducer function.
+        self._reducer_setup(reducer)
+
+        # Setup reducer job indices for uncoordinated reduction.
+        if self.client['backend'] == 'binary_tree':
+            self._binary_reducer(ranges)
+
+        # Write mappers jobs that will trigger the funcions.
+        self._launch_mappers(ranges)
+
+        # Wait for final result
+        start = ranges[0].id
+        end = ranges[-1].id
+
+        target_name = f'{start}_{end}'
+        print(f'Target Name: {target_name}')
+
+        with self.client['mc'].listen_bucket_notification(
+                self.client['bucket_name'],
+                prefix='partial-results/',
+                events=['s3:ObjectCreated:*']) as events:
+
+            for event in events:
+                file_name = event['Records'][0]['s3']['object']['key'].split('/')[1]
+                print(f'File {file_name} written to partial-results folder.')
+                if file_name == target_name:
+                    break
+
+        # Once the final result has been generate fetch it from
+        final_result = self.get_object(target_name)
+
+        # Stop timer
+        self.client['ttp'] = round(t.RealTime(), 2)
+        print(f'Time to plot: {self.client["ttp"]}')
+
+        # Generate benchmark reports if requested.
+        if self.client['benchmarking']:
+                self.benchmark_report()
+
+        # Cleanup bucket and asociated services.
+        self._cleanup()
+
+        return final_result
+
+
+    def _mapper_setup(self, mapper):
+        mapper_bytes = cloudpickle.dumps(mapper)
+        mapper_stream = io.BytesIO(mapper_bytes)
+        self.client['mc'].put_object(self.client['bucket_name'],
+                                     'functions/mapper',
+                                     mapper_stream,
+                                     length = len(mapper_bytes))
+
+
+    def _launch_mappers(self, ranges):
+        for rang in ranges:
+            rang_bytes = cloudpickle.dumps(rang)
+            rang_stream = io.BytesIO(rang_bytes)
+            file_name = f'{rang.id}_{rang.id}'
+            self.client['mc'].put_object(self.client['bucket_name'],
+                                         f'mapper-jobs/{file_name}',
+                                         rang_stream,
+                                         length = len(rang_bytes))
+
+
+    def _reducer_setup(self, reducer):
+        reducer_bytes = cloudpickle.dumps(reducer)
+        reducer_stream = io.BytesIO(reducer_bytes)
+        self.client['mc'].put_object(self.client['bucket_name'],
+                                     'functions/reducer',
+                                     reducer_stream,
+                                     length = len(reducer_bytes))
+
+
+    def _binary_reducer(self, ranges):
 
         def index_generator2(ranges):
             max_depth = ceil(log(len(ranges))/log(2))
@@ -412,67 +510,19 @@ class OSCARBackend(Base.BaseBackend):
             flattened = [f'{job[0]}_{job[1]}-{job[2]}_{job[3]}' for elem in reducers for job in elem]
             return flattened
 
-        
         # Generate indexing.
         reduce_indices = index_generator2(ranges)
-        print(reduce_indices)
+        #print(reduce_indices)
 
-        # Read bucket name
-        bucket_name = self.client['bucket_name']
-        print(bucket_name)
-
-        # If we have created the services during client instantiation,
-        # check that they have been created succesfully.
-        if 'tasks' in self.client:
-                for task in self.client['tasks']:
-                        print(task)
-
-        # Write mapper and reducer functions to bucket.
-        # TODO: refactor this for less repeated code.
-        #for fun in [mapper, reducer]:
-        #        fun_bytes = cloudpickle.dumps(fun)
-        #        fun_stream = io.BytesIO(fun_bytes)
-        #        mc.put_object(bucket_name,
-        #                      f'function')
-
-
-        mapper_bytes = cloudpickle.dumps(mapper)
-        reducer_bytes = cloudpickle.dumps(reducer)
-
-        mapper_stream = io.BytesIO(mapper_bytes)
-        reducer_stream = io.BytesIO(reducer_bytes)
-
-        mc.put_object(bucket_name,
-                      'functions/mapper',
-                      mapper_stream,
-                      length = len(mapper_bytes))
-
-        mc.put_object(bucket_name,
-                      'functions/reducer',
-                      reducer_stream,
-                      length = len(reducer_bytes))
-
-        # Write reduction jobs.
+        # Write Reduction Jobs
         for reducer_job in reduce_indices:
-            mc.put_object(bucket_name,
-                          f'reducer-jobs/{reducer_job}',
-                          io.BytesIO(b'\xff'),
-                          length=1)
-
-        # Write mappers jobs.
-        for rang in ranges:
-            print(f'{rang.id}   {rang.start}   {rang.end}')
-            rang_bytes = cloudpickle.dumps(rang)
-            rang_stream = io.BytesIO(rang_bytes)
-            file_name = f'{rang.id}_{rang.id}'
-            mc.put_object(bucket_name,
-                          f'mapper-jobs/{file_name}',
-                          rang_stream,
-                          length = len(rang_bytes))
+            self.client['mc'].put_object(self.client['bucket_name'],
+                                         f'reducer-jobs/{reducer_job}',
+                                         io.BytesIO(b'\xff'),
+                                         length=1)
 
 
-        # Retrieve files
-        # Obtain final result
+    def _client_reducer(self):
         found = False
         start = ranges[0].id
         end = ranges[-1].id
@@ -481,39 +531,40 @@ class OSCARBackend(Base.BaseBackend):
         print(f'Target Name: {target_name}')
         full_name = ''
         final_result = None
+        count = self.client['mapper_count']
+        previous = None
 
-        # TODO: Change this for a call to _progress()
-        from IPython.display import clear_output
+        with self.client['mc'].listen_bucket_notification(self.client['bucket_name'],
+                                           prefix='partial-results/',
+                                           events=['s3:ObjectCreated:*']) as events:
+            # Permorm reduction in client?
+            for event in events:
+                #full_name
+                file_name = event['Records'][0]['s3']['object']['key'].split('/')[1]
+                print(f'File {file_name} written to partial-results folder.')
 
-        print(f'Waiting for final result {target_name}.')
-        while not found:
-            files = mc.list_objects(bucket_name, 'partial-results/',
-                             recursive=True)
+                tmp = self.get_object(file_name)
 
-            #clear_output(wait=True)
+                if previous is not None:
+                    print('Reducing')
+                    previous = reducer(previous, tmp)
 
-            for obj in files:
-                full_name = obj.object_name
-                file_name = full_name.split('/')[1]
-                #print(f'File name: {file_name}')
-                if target_name == file_name:
-                        found = True
-                        break
+                previous = tmp
+                count -= 1
 
-            #print(f'Waiting for final result {target_name}, sleeping 10 seconds.', flush=True)
-            sleep(10)
-            
-        result_response = mc.get_object(bucket_name,  f'partial-results/{target_name}')
-        result_bytes = result_response.data
-        final_result = cloudpickle.loads(result_bytes)
+                if count == 0:
+                    break
 
-        if self.client['benchmarking']:
-                self.benchmark_report(mc, bucket_name)
 
-        # Cleanup bucket and asociated services.
-        self._cleanup()
 
-        return final_result
+    def _serverless_coord_reducer(self):
+        pass
+
+
+    def get_object(self, name):
+        response = self.client['mc'].get_object(self.client['bucket_name'],
+                                     f'partial-results/{name}')
+        return cloudpickle.loads(response.data)
 
     def distribute_unique_paths(self, paths):
         """
@@ -556,6 +607,8 @@ class OSCARBackend(Base.BaseBackend):
 
         for error in errors:
             print(error)
+
+        time.sleep(3)
 
         try:
             self.client['mc'].remove_bucket(self.client['bucket_name'])
