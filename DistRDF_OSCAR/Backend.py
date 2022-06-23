@@ -13,7 +13,7 @@ import uuid
 import asyncio
 import csv
 from copy import deepcopy
-
+import urllib3
 try:
     import requests
     import cloudpickle
@@ -31,28 +31,35 @@ class OSCARBackend(Base.BaseBackend):
     """OSCAR backend for distributed RDataFrame."""
 
     def __init__(self, oscarclient=None):
+        # Check oscarclient has been paased to the constructor.
+        if not oscarclient:
+           raise AttributeError(("oscarclient can't be None"))
+
+        # Check at least minio endpoint and credentials have been configured.
+        try:
+            oscarclient['minio_endpoint']
+            oscarclient['minio_access']
+            oscarclient['minio_secret']
+        except AttributeError as e:
+            raise KeyError(("Missing minio parameter" + str(e)))
+
         super(OSCARBackend, self).__init__()
-        # If the user didn't explicitly pass a Client instance, the argument
-        # `OSCARclient` will be `None`. In this case, we create a default OSCAR
-        # client connected to a cluster instance with N worker processes, where
-        # N is the number of cores on the local machine.
 
         self.client =  deepcopy(oscarclient)
 
         # Generate uuid to allow job concurrency.
         self.client['uuid'] = uuid.uuid4()
-        #print(f'Info_{oscarclient["node_count"]}_{self.client["uuid"]}')
-        # O
+
+
         if self.client['benchmarking']:
-            self.client['bucket_name'] = f"{self.client['bucket_name']}-{self.client['uuid']}-benchmark"
+            self.client['bucket_name'] = f'{self.client["bucket_name"]}-{self.client["uuid"]}-benchmark'
         else:
             self.client['bucket_name'] = f'{self.client["bucket_name"]}-{self.client["uuid"]}'
         print(self.client['bucket_name'])
 
-        # Stablish Minio connection
-        # We need this version due to no ssl certificates.
-        import urllib3
-        mc = Minio(
+        # Create MINIO client
+        # We need this version (use of http_client) due to no ssl certificates.
+        self.client['mc'] = Minio(
             self.client['minio_endpoint'],
             self.client['minio_access'],
             self.client['minio_secret'],
@@ -63,31 +70,35 @@ class OSCARBackend(Base.BaseBackend):
             )
         )
 
-        self.client['mc'] = mc
-
         # Check if bucket exists.
-        if not mc.bucket_exists(self.client['bucket_name']):
+        if not self.client['mc'].bucket_exists(self.client['bucket_name']):
             print('Bucket does not exist. Trying to create it.')
+
+            # Check oscar credentials
             if not self.client['oscar_endpoint'] or not self.client['oscar_access'] or not self.client['oscar_secret']:
-                print('Missing OSCAR credentials. Please provide endpoint and access credentials')
+                print('Missing OSCAR credentials. Please provide endpoint and access credentials to create the services.')
                 return
+
             # Create Bucket.
             try:
                 # Create bucket
                 print('Creating bucket...')
-                mc.make_bucket(f"{self.client['bucket_name']}")
+                self.client['mc'].make_bucket(f"{self.client['bucket_name']}")
                 print('Bucket created!')
             except Exception as e:
                 print('Couldn\'t create bucket.')
-                print(e)
-                self.client = None
-                return
+                raise e
+
+            # Create services asociated to the new bucket.
+            try:
+                self._service_creation()
+            except Exception as e:
+                print('Error creating services.')
+                raise e
         else:
             print('Bucket already exists.')
 
-        # TODO: Should we check if services exist??
-        # Create services.
-        self._service_creation()
+        print('Done setting up OSCAR backend!')
 
 
     def _service_creation(self):
@@ -96,88 +107,34 @@ class OSCARBackend(Base.BaseBackend):
         """
         try:
             print('Creating services...')
-            # Create services associated to bucket.
-            services = ['mapper', 'reducer']
-            #services = ['mapper']
+
+            # Decide which services we are need to create depending on
+            # the selected backend.
+            backend = self.client['backend']
+
+            services = ['mapper']
+
+            if backend == 'tree_reduce':
+                services.append('reducer')
+            elif backend == 'tree_v2_reduce':
+                services.append('reducer_v2')
+            else: # Coordinator
+                services.append('coordinator')
+                services.append('reducer_coor') # Reducer depending on coordinator writes.
+
             self.client['tasks'] = []
             self.client['services'] = []
 
             for service in services:
-                    self.client['tasks'].append(self._create_service(
-                            self.client['bucket_name'],
-                            self.client['benchmarking'],
-                            service,
-                            self.client['oscar_endpoint'],
-                            self.client['oscar_access'],
-                            self.client['oscar_secret'])
-                        )
+                    self.client['tasks'].append(self._create_service(service))
 
             print('Done creating services!')
+
         except Exception as e:
-            print('Exception creating services.')
-            print('Deleting associated bucket')
-            print(e)
-            raise
-
-
-    def _service_yaml_to_http(self, function):
-        # TODO: read from yaml template instead of hardcoding the dictionary?
-        bucket_name = f'{self.client["bucket_name"]}'
-        print(bucket_name)
-
-        # Path were OSCAR will trigger the service.
-        path = ''
-        if function == 'mapper':
-            path = f"{bucket_name}/mapper-jobs"
-        else:
-            path = f"{bucket_name}/partial-results"
-
-        prefixes = ['partial-results', 'logs']
-        script_suffix = '-benchmark'
-        benchmarking = self.client['benchmarking']
-        if benchmarking == True:
-            prefixes.append('benchmarks')
-            script_suffix = '-benchmark'
-
-        # TODO: maybe encode this to base64?
-        script = ''
-        with open(f'/usr/local/lib/root/DistRDF/Backends/OSCAR/service-scripts/root-{function}{script_suffix}.sh' ,'r') as script_file:
-                script = script_file.read()
-
-        service_name = f"{function[0]}-{self.client['uuid']}"
-        self.client['services'].append(service_name)
-        http_body = {
-            # Name service strucure
-            # bucket_name-root-[mapper|reducer]
-            #"name": f"{bucket_name}-{function}",
-            "name": service_name,
-            "memory": "3Gi",
-            "cpu": self.client['cpu_val'],
-            "image": f"ghcr.io/break95/root-{function}{script_suffix}",
-            "alpine": False,
-            "script": script,
-            "input": [
-                {
-                    "storage_provider": "minio.default",
-                    "path": path
-                }
-            ],
-            "output": [
-                {
-                    "storage_provider": "minio.default",
-                    "path": f"{bucket_name}",
-                    "prefix": prefixes
-                }
-            ]
-        }
-
-        print(f'CPU: {http_body["cpu"]}')
-
-        # Also output to benchmarking folder if needed.
-        if benchmarking:
-            http_body['output'][0]['prefix'].append('benchmarking')
-
-        return http_body
+            print('Error creating services.')
+            # print('Deleting associated bucket')
+            # print(e)
+            raise e
 
 
     def _create_service(self, bucket_name, benchmarking, service, oscar_endpoint, access, secret):
@@ -196,179 +153,68 @@ class OSCARBackend(Base.BaseBackend):
                       verify = False))
 
 
-    def optimize_npartitions(self):
-        # For Serverless the decission process should be different, theoretically
-        # any serverless approach can execute as many functions, concurrently,
-        # as we want. We should take decissions based of the 'function' resources,
-        # i.e. memory. Focused on partition size not number of partitions.
+    def _service_yaml_to_http(self, function):
+        # TODO: read from yaml template instead of hardcoding the dictionary?
+        bucket_name = f'{self.client["bucket_name"]}'
+        print(bucket_name)
 
-        # Maybe create test payloads during setup to decide upon size of partition
-
-        """
-        Attempts to compute a clever number of partitions for the current
-        execution. Currently, we try to get the total number of worker logical
-        cores in the cluster.
-        """
-        #workers_dict = self.client.scheduler_info().get("workers")
-        workers_dict = None
-        if workers_dict:
-            # The 'workers' key exists in the dictionary and it is non-empty
-            return sum(worker['nthreads'] for worker in workers_dict.values())
+        # Path were OSCAR will trigger the service.
+        trigger_path = ''
+        if function == 'mapper':
+            trigger_path = f"{bucket_name}/mapper-jobs"
         else:
-            # The scheduler doesn't have information about the workers
-            # print('Min Partitions' + str(self.MIN_NPARTITIONS))
-            return self.MIN_NPARTITIONS
+            trigger_path = f"{bucket_name}/partial-results"
+
+        prefixes = ['partial-results', 'logs']
+        script_suffix = '-benchmark'
+        benchmarking = self.client['benchmarking']
+
+        if benchmarking == True:
+            prefixes.append('benchmarks')
+            script_suffix = '-benchmark'
+
+        # TODO: maybe encode this to base64?
+        script = ''
+        with open(f'/usr/local/lib/root/DistRDF/Backends/OSCAR/service-scripts/root-{function}{script_suffix}.sh' ,'r') as script_file:
+                script = script_file.read()
+
+        service_name = f"{function[0]}-{self.client['uuid']}"
+        self.client['services'].append(service_name)
+        http_body = {
+            # Name service strucure
+            # bucket_name-root-[mapper|reducer]
+            #"name": f"{bucket_name}-{function}",
+            "name": service_name,
+            "memory": self.client['mem_val'],
+            "cpu": self.client['cpu_val'],
+            "image": f"ghcr.io/break95/root-{function}{script_suffix}",
+            "alpine": False,
+            "script": script,
+            "input": [
+                {
+                    "storage_provider": "minio.default",
+                    "path": trigger_path
+                }
+            ],
+            "output": [
+                {
+                    "storage_provider": "minio.default",
+                    "path": f"{bucket_name}",
+                    "prefix": prefixes
+                }
+            ]
+        }
+
+        print(f'CPU: {http_body["cpu"]}')
+        print(f'Memory: {http_body["memory"]}')
+
+        # Also output to benchmarking folder if needed.
+        if benchmarking:
+            http_body['output'][0]['prefix'].append('benchmarking')
+
+        return http_body
 
 
-    def benchmark_report(self):
-        """
-        Generate perfomance report based on results of job.
-        """
-        import glob
-
-        # TODO: Filter duplicate reducers.
-        bench_results = self.client['mc'].list_objects(self.client['bucket_name'],
-                                                        'benchmarks/',
-                                                        recursive=True)
-        results = {'mapper': {},
-                   'reducer': {}}
-
-        reducer_counts = {}
-
-        # Get benchmark results from MINIO.
-        for obj in bench_results:
-            tmp = obj.object_name
-            parts = tmp.split('/')[1].split('_')
-
-            bench_response = self.client['mc'].get_object(self.client['bucket_name'],
-                                                          tmp)
-            bench_bytes = bench_response.data
-            bench_response.release_conn()
-
-            name = f'{parts[1]}_{parts[2]}'
-            if name in results[parts[0]]:
-                results[parts[0]][name] = results[parts[0]][name] | {parts[3]: cloudpickle.loads(bench_bytes)}
-            else:
-                results[parts[0]][name] = {parts[3]: cloudpickle.loads(bench_bytes)}
-
-            # Add working node
-            results[parts[0]][name] = results[parts[0]][name] | {'node': parts[5]}
-
-            # Check for repeated reduced calls.
-            # For each write to bucket we produce a reducer so every reducer
-            # (i.e. 0_1) is called two times. Producing a total of 10 files:
-            # [start, end, net_start, net_end, usage] * 2.
-            if parts[0] == 'reducer':
-                if name in reducer_counts:
-                    reducer_counts[name] = reducer_counts[name] + 1
-                else:
-                    reducer_counts[name] = 1
-
-        #for key in reducer_counts:
-            #if (reducer_counts[key] /10) > 1:
-            #    print(f'{int(reducer_counts[key]/5) - 2} extra reducers invoked for for ')
-            #print(f'Reducer {key} count: {reducer_counts[key] / 5}')
-
-        import json # For some reason this in necessary.
-        self.report_to_csv(json.loads(json.dumps(results)))
-
-
-    def report_to_csv(self, data_dict):
-        #job_id = self.client['uuid']
-        job_id = self.client['mapper_count']
-        folder = '' if self.client['folder'] is None else f'{self.client["folder"]}/'
-        # Generate CSV
-        delimiter= '|'
-        headings_process = [
-            # function:   mapper or reducer.
-            # id:         what mapper or reducer is it, i.e 0_0, 4_8.
-            # phase:      start or end.
-            'function', 'id', 'phase',
-
-            # CPU Metrics
-            'cpu_user', 'cpu_system', 'cpu_child_user', 'cpu_child_sys', 'iowait',
-
-            # IO Counters
-            'io_read_count', 'io_write_count', 'io_read_bytes', 'io_write_bytes',
-            'io_read_chars', 'io_write_chars',
-
-            # Ctx switches
-            'ctx_voluntary', 'ctx_involuntary',
-
-            # Memory metrics
-            'mem_rss', 'mem_vms', 'mem_shared', 'mem_text', 'mem_lib', 'mem_data',
-            'mem_dirty', 'mem_uss', 'mem_pss', 'mem_swap',
-
-            # TODO: Check if this data is for deployed job or full node.
-            # System Network
-            'net_bytes_sent', 'net_bytes_recv', 'net_packets_sent', 'net_packets_recv',
-            'net_errin', 'net_errout', 'net_dropin', 'net_dropout',
-
-            # Create time (only taken on start)
-            'create_time',
-
-            # Cluster node in which the function has been executed.
-            'node'
-        ]
-
-        headings_usage = [
-            'function', 'id', 'time', 'cpu_percent', 'mem_percent', 'node'
-        ]
-
-        csv_row = headings_process
-
-        csv_f_proc = open(f'{folder}{job_id}_process.csv' , 'w', newline='')
-        proc_writer = csv.writer(csv_f_proc, delimiter='|')
-        proc_writer.writerow(headings_process)
-        print(f'{job_id}_process.csv')
-
-        csv_f_usage = open(f'{folder}{job_id}_usage.csv', 'w', newline='')
-        usage_writer = csv.writer(csv_f_usage, delimiter='|')
-        usage_writer.writerow(headings_usage)
-        print(f'{job_id}_usage.csv')
-
-        for fun in data_dict.keys():
-            csv_base = [fun]
-            for id in data_dict[fun].keys():
-                csv_id = csv_base + [id]
-
-                # Process
-                for phase in ['start', 'end']:
-                    csv_phase = csv_id + [phase]
-                    csv_row = csv_phase
-
-                    #for metric in data_dict[fun][id][phase].keys():
-                    for metric in ['cpu_times', 'io_counters', 'num_ctx_switches', 'memory_full_info']:
-                        csv_row = csv_row + data_dict[fun][id][phase][metric]
-
-                    if phase == 'start':
-                        csv_row = csv_row + data_dict[fun][id]['netiost']
-                        csv_row = csv_row + [data_dict[fun][id][phase]['create_time']]
-                    else:
-                        csv_row = csv_row + data_dict[fun][id]['netioend']
-                        csv_row = csv_row + [0]
-
-                    csv_row = csv_row + [data_dict[fun][id]['node']]
-
-                    proc_writer.writerow(csv_row)
-
-                # Usage
-                ts = 0.0
-                csv_row = csv_id
-                for snapshot in data_dict[fun][id]['cpupercent']:
-                    csv_row = csv_id + [ts] + snapshot + [data_dict[fun][id]['node']]
-                    ts += 0.5
-                    usage_writer.writerow(csv_row)
-
-        csv_f_proc.close()
-        csv_f_usage.close()
-
-        # Write time to plot.
-        csv_ttp = open(f'{folder}{job_id}_ttp.csv', 'w', newline='')
-        ttp_writer = csv.writer(csv_ttp, delimiter='|')
-        ttp_writer.writerow(['ttp'])
-        ttp_writer.writerow([str(self.client['ttp'])])
-        csv_ttp.close()
 
 
     def ProcessAndMerge(self, ranges, mapper, reducer):
@@ -566,30 +412,6 @@ class OSCARBackend(Base.BaseBackend):
                                      f'partial-results/{name}')
         return cloudpickle.loads(response.data)
 
-    def distribute_unique_paths(self, paths):
-        """
-        Dask supports sending files to the workes via the `Client.upload_file`
-        method. Its stated purpose is to send local Python packages to the
-        nodes, but in practice it uploads the file to the path stored in the
-        `local_directory` attribute of each worker.
-        """
-        for filepath in paths:
-            self.client.upload_file(filepath)
-
-    def make_dataframe(self, *args, **kwargs):
-        """
-        Creates an instance of distributed RDataFrame that can send computations
-        to a Dask cluster.
-        """
-        # Set the number of partitions for this dataframe, one of the following:
-        # 1. User-supplied `npartitions` optional argument
-        # 2. An educated guess according to the backend, using the backend's
-        #    `optimize_npartitions` function
-        # 3. Set `npartitions` to 2
-        npartitions = kwargs.pop("npartitions", self.optimize_npartitions())
-        headnode = HeadNode.get_headnode(self, npartitions, *args)
-        return DataFrame.RDataFrame(headnode)
-
 
     def _cleanup(self):
         """
@@ -630,8 +452,191 @@ class OSCARBackend(Base.BaseBackend):
                     verify = False))
 
 
-    def _progress(self, start, end):
+    def benchmark_report(self):
         """
-        Print progress of running job.
+        Generate perfomance report based on results of job.
         """
-        pass
+        import glob
+
+        # TODO: Filter duplicate reducers.
+        bench_results = self.client['mc'].list_objects(self.client['bucket_name'],
+                                                        'benchmarks/',
+                                                        recursive=True)
+        results = {'mapper': {},
+                   'reducer': {}}
+
+        reducer_counts = {}
+
+        # Get benchmark results from MINIO.
+        for obj in bench_results:
+            tmp = obj.object_name
+            parts = tmp.split('/')[1].split('_')
+
+            bench_response = self.client['mc'].get_object(self.client['bucket_name'],
+                                                          tmp)
+            bench_bytes = bench_response.data
+            bench_response.release_conn()
+
+            name = f'{parts[1]}_{parts[2]}'
+            if name in results[parts[0]]:
+                results[parts[0]][name] = results[parts[0]][name] | {parts[3]: cloudpickle.loads(bench_bytes)}
+            else:
+                results[parts[0]][name] = {parts[3]: cloudpickle.loads(bench_bytes)}
+
+            # Add working node
+            results[parts[0]][name] = results[parts[0]][name] | {'node': parts[5]}
+
+            # Check for repeated reduced calls.
+            # For each write to bucket we produce a reducer so every reducer
+            # (i.e. 0_1) is called two times. Producing a total of 10 files:
+            # [start, end, net_start, net_end, usage] * 2.
+            if parts[0] == 'reducer':
+                if name in reducer_counts:
+                    reducer_counts[name] = reducer_counts[name] + 1
+                else:
+                    reducer_counts[name] = 1
+
+        #for key in reducer_counts:
+            #if (reducer_counts[key] /10) > 1:
+            #    print(f'{int(reducer_counts[key]/5) - 2} extra reducers invoked for for ')
+            #print(f'Reducer {key} count: {reducer_counts[key] / 5}')
+
+        import json # For some reason this in necessary.
+        self._report_to_csv(json.loads(json.dumps(results)))
+
+
+    def _report_to_csv(self, data_dict):
+        job_id = self.client['mapper_count']
+        folder = '' if self.client['folder'] is None else f'{self.client["folder"]}/'
+        # Generate CSV
+        delimiter= '|'
+        headings_process = [
+            # function:   mapper or reducer.
+            # id:         what mapper or reducer is it, i.e 0_0, 4_8.
+            # phase:      start or end.
+            'function', 'id', 'phase',
+            # CPU Metrics
+            'cpu_user', 'cpu_system', 'cpu_child_user', 'cpu_child_sys', 'iowait',
+            # IO Counters
+            'io_read_count', 'io_write_count', 'io_read_bytes', 'io_write_bytes',
+            'io_read_chars', 'io_write_chars',
+            # Ctx switches
+            'ctx_voluntary', 'ctx_involuntary',
+            # Memory metrics
+            'mem_rss', 'mem_vms', 'mem_shared', 'mem_text', 'mem_lib', 'mem_data',
+            'mem_dirty', 'mem_uss', 'mem_pss', 'mem_swap',
+            # System Network
+            'net_bytes_sent', 'net_bytes_recv', 'net_packets_sent', 'net_packets_recv',
+            'net_errin', 'net_errout', 'net_dropin', 'net_dropout',
+            # Create time (only taken on start)
+            'create_time',
+            # Cluster node in which the function has been executed.
+            'node'
+        ]
+
+        headings_usage = ['function', 'id', 'time', 'cpu_percent', 'mem_percent', 'node']
+
+        csv_row = headings_process
+
+        csv_f_proc = open(f'{folder}{job_id}_process.csv' , 'w', newline='')
+        proc_writer = csv.writer(csv_f_proc, delimiter='|')
+        proc_writer.writerow(headings_process)
+        print(f'{job_id}_process.csv')
+
+        csv_f_usage = open(f'{folder}{job_id}_usage.csv', 'w', newline='')
+        usage_writer = csv.writer(csv_f_usage, delimiter='|')
+        usage_writer.writerow(headings_usage)
+        print(f'{job_id}_usage.csv')
+
+        for fun in data_dict.keys():
+            csv_base = [fun]
+            for id in data_dict[fun].keys():
+                csv_id = csv_base + [id]
+
+                # Process
+                for phase in ['start', 'end']:
+                    csv_phase = csv_id + [phase]
+                    csv_row = csv_phase
+
+                    #for metric in data_dict[fun][id][phase].keys():
+                    for metric in ['cpu_times', 'io_counters', 'num_ctx_switches', 'memory_full_info']:
+                        csv_row = csv_row + data_dict[fun][id][phase][metric]
+
+                    if phase == 'start':
+                        csv_row = csv_row + data_dict[fun][id]['netiost']
+                        csv_row = csv_row + [data_dict[fun][id][phase]['create_time']]
+                    else:
+                        csv_row = csv_row + data_dict[fun][id]['netioend']
+                        csv_row = csv_row + [0]
+
+                    csv_row = csv_row + [data_dict[fun][id]['node']]
+
+                    proc_writer.writerow(csv_row)
+
+                # Usage
+                ts = 0.0
+                csv_row = csv_id
+                for snapshot in data_dict[fun][id]['cpupercent']:
+                    csv_row = csv_id + [ts] + snapshot + [data_dict[fun][id]['node']]
+                    ts += 0.5
+                    usage_writer.writerow(csv_row)
+
+        csv_f_proc.close()
+        csv_f_usage.close()
+
+        # Write time to plot.
+        csv_ttp = open(f'{folder}{job_id}_ttp.csv', 'w', newline='')
+        ttp_writer = csv.writer(csv_ttp, delimiter='|')
+        ttp_writer.writerow(['ttp'])
+        ttp_writer.writerow([str(self.client['ttp'])])
+        csv_ttp.close()
+
+
+    def optimize_npartitions(self):
+        # For Serverless the decission process should be different, theoretically
+        # any serverless approach can execute as many functions, concurrently,
+        # as we want. We should take decissions based of the 'function' resources,
+        # i.e. memory. Focused on partition size not number of partitions.
+
+        # Maybe create test payloads during setup to decide upon size of partition
+
+        """
+        Attempts to compute a clever number of partitions for the current
+        execution. Currently, we try to get the total number of worker logical
+        cores in the cluster.
+        """
+        #workers_dict = self.client.scheduler_info().get("workers")
+        workers_dict = None
+        if workers_dict:
+            # The 'workers' key exists in the dictionary and it is non-empty
+            return sum(worker['nthreads'] for worker in workers_dict.values())
+        else:
+            # The scheduler doesn't have information about the workers
+            # print('Min Partitions' + str(self.MIN_NPARTITIONS))
+            return self.MIN_NPARTITIONS
+
+
+    def distribute_unique_paths(self, paths):
+        """
+        Dask supports sending files to the workes via the `Client.upload_file`
+        method. Its stated purpose is to send local Python packages to the
+        nodes, but in practice it uploads the file to the path stored in the
+        `local_directory` attribute of each worker.
+        """
+        for filepath in paths:
+            self.client.upload_file(filepath)
+
+
+    def make_dataframe(self, *args, **kwargs):
+        """
+        Creates an instance of distributed RDataFrame that can send computations
+        to a Dask cluster.
+        """
+        # Set the number of partitions for this dataframe, one of the following:
+        # 1. User-supplied `npartitions` optional argument
+        # 2. An educated guess according to the backend, using the backend's
+        #    `optimize_npartitions` function
+        # 3. Set `npartitions` to 2
+        npartitions = kwargs.pop("npartitions", self.optimize_npartitions())
+        headnode = HeadNode.get_headnode(self, npartitions, *args)
+        return DataFrame.RDataFrame(headnode)
