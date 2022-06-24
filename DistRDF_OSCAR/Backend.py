@@ -25,7 +25,7 @@ from requests.packages.urllib3.exceptions import InsecureRequestWarning
 
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
-import ROOT
+import ROOT # Imported to use stopwatch inside ProcessAndMerge to better measure time.
 
 class OSCARBackend(Base.BaseBackend):
     """OSCAR backend for distributed RDataFrame."""
@@ -45,12 +45,12 @@ class OSCARBackend(Base.BaseBackend):
 
         super(OSCARBackend, self).__init__()
 
-        self.client =  deepcopy(oscarclient)
+        self.client = deepcopy(oscarclient)
 
         # Generate uuid to allow job concurrency.
         self.client['uuid'] = uuid.uuid4()
 
-
+        # Setup bucket name.
         if self.client['benchmarking']:
             self.client['bucket_name'] = f'{self.client["bucket_name"]}-{self.client["uuid"]}-benchmark'
         else:
@@ -70,7 +70,7 @@ class OSCARBackend(Base.BaseBackend):
             )
         )
 
-        # Check if bucket exists.
+        # Check if bucket exists. Should never exist.
         if not self.client['mc'].bucket_exists(self.client['bucket_name']):
             print('Bucket does not exist. Trying to create it.')
 
@@ -96,7 +96,9 @@ class OSCARBackend(Base.BaseBackend):
                 print('Error creating services.')
                 raise e
         else:
-            print('Bucket already exists.')
+            # In current implementation bucket shouldn't exist. So, raise exception/
+            raise Exception(('Bucket already exists.'))
+            #print('Bucket already exists.')
 
         print('Done setting up OSCAR backend!')
 
@@ -117,10 +119,10 @@ class OSCARBackend(Base.BaseBackend):
             if backend == 'tree_reduce':
                 services.append('reducer')
             elif backend == 'tree_v2_reduce':
-                services.append('reducer_v2')
+                services.append('reducer-v2')
             else: # Coordinator
                 services.append('coordinator')
-                services.append('reducer_coor') # Reducer depending on coordinator writes.
+                services.append('reducer-coord') # Reducer depending on coordinator writes.
 
             self.client['tasks'] = []
             self.client['services'] = []
@@ -137,18 +139,18 @@ class OSCARBackend(Base.BaseBackend):
             raise e
 
 
-    def _create_service(self, bucket_name, benchmarking, service, oscar_endpoint, access, secret):
+    def _create_service(self, service):
         """
         If needed, create services asynchronously at the beginning of the data frame  and
         check for the results of the service creation in `process_and_merge` to avoid waiting
         as much as possible.
         """
-        print(f'Creating service {service} for {bucket_name}')
+        print(f'Creating service {service} for {self.client["bucket_name"]}')
         request_body = self._service_yaml_to_http(service)
 
-        return(requests.post(f"{oscar_endpoint}/system/services",
-                      auth=requests.auth.HTTPBasicAuth(access,
-                                                       secret),
+        return(requests.post(f'{self.client["oscar_endpoint"]}/system/services',
+                      auth=requests.auth.HTTPBasicAuth(self.client["oscar_access"],
+                                                       self.client["oscar_secret"]),
                       json=request_body,
                       verify = False))
 
@@ -160,18 +162,30 @@ class OSCARBackend(Base.BaseBackend):
 
         # Path were OSCAR will trigger the service.
         trigger_path = ''
+        out_prefixes = []
         if function == 'mapper':
             trigger_path = f"{bucket_name}/mapper-jobs"
-        else:
+            out_prefixes.append('partial-results')
+        elif function == 'reducer' or function == 'reducer_v2':
             trigger_path = f"{bucket_name}/partial-results"
+            out_prefixes.append('partial-results')
+        elif function == 'reducer_coord':
+            trigger_path = f'{bucket_name}/reducer-jobs'
+            out_prefixes.append('partial-resuts')
+        else: # We should be writting path for coordinator in this case.
+            trigger_path = f'{bucket_name}/coord-config'
+            out_prefixes.append('reducer-jobs')
 
-        prefixes = ['partial-results', 'logs']
-        script_suffix = '-benchmark'
-        benchmarking = self.client['benchmarking']
 
-        if benchmarking == True:
-            prefixes.append('benchmarks')
+        print(f'Trigger path: {trigger_path}')
+        script_suffix = ''
+
+        if self.client['benchmarking'] == True and function != 'coordinator':
+            out_prefixes.append('benchmarking')
             script_suffix = '-benchmark'
+
+        print(f'Write prefixes: {out_prefixes}')
+
 
         # TODO: maybe encode this to base64?
         script = ''
@@ -185,8 +199,10 @@ class OSCARBackend(Base.BaseBackend):
             # bucket_name-root-[mapper|reducer]
             #"name": f"{bucket_name}-{function}",
             "name": service_name,
-            "memory": self.client['mem_val'],
-            "cpu": self.client['cpu_val'],
+            #"memory": self.client['mem_val'],
+            #"cpu": self.client['cpu_val'],
+            "memory" : '3Gi',
+            "cpu": '1',
             "image": f"ghcr.io/break95/root-{function}{script_suffix}",
             "alpine": False,
             "script": script,
@@ -200,21 +216,12 @@ class OSCARBackend(Base.BaseBackend):
                 {
                     "storage_provider": "minio.default",
                     "path": f"{bucket_name}",
-                    "prefix": prefixes
+                    "prefix": out_prefixes
                 }
             ]
         }
 
-        print(f'CPU: {http_body["cpu"]}')
-        print(f'Memory: {http_body["memory"]}')
-
-        # Also output to benchmarking folder if needed.
-        if benchmarking:
-            http_body['output'][0]['prefix'].append('benchmarking')
-
         return http_body
-
-
 
 
     def ProcessAndMerge(self, ranges, mapper, reducer):
@@ -246,15 +253,19 @@ class OSCARBackend(Base.BaseBackend):
         print('Starting timer')
         t = ROOT.TStopwatch()
 
-        # Set up mapper function.
+        # Set up mapper and reducer functions.
         self._mapper_setup(mapper)
-
-        # Set up reducer function.
         self._reducer_setup(reducer)
 
         # Setup reducer job indices for uncoordinated reduction.
-        if self.client['backend'] == 'binary_tree':
+        if self.client['backend'] == 'tree_reduce':
             self._binary_reducer(ranges)
+        elif self.client['backend'] == 'tree_v2_reduce':
+            pass
+        elif self.client['backend'] == 'coord_reduce':
+            pass
+        else:
+            raise Exception('Specified backend not supported.')
 
         # Write mappers jobs that will trigger the funcions.
         self._launch_mappers(ranges)
@@ -368,38 +379,9 @@ class OSCARBackend(Base.BaseBackend):
                                          length=1)
 
 
-    def _client_reducer(self):
-        found = False
-        start = ranges[0].id
-        end = ranges[-1].id
-
-        target_name = f'{start}_{end}'
-        print(f'Target Name: {target_name}')
-        full_name = ''
-        final_result = None
-        count = self.client['mapper_count']
-        previous = None
-
-        with self.client['mc'].listen_bucket_notification(self.client['bucket_name'],
-                                           prefix='partial-results/',
-                                           events=['s3:ObjectCreated:*']) as events:
-            # Permorm reduction in client?
-            for event in events:
-                #full_name
-                file_name = event['Records'][0]['s3']['object']['key'].split('/')[1]
-                print(f'File {file_name} written to partial-results folder.')
-
-                tmp = self.get_object(file_name)
-
-                if previous is not None:
-                    print('Reducing')
-                    previous = reducer(previous, tmp)
-
-                previous = tmp
-                count -= 1
-
-                if count == 0:
-                    break
+    def _coord_reducer(self):
+        # Write file containing needed data for the coordinator.
+        pass
 
 
 
