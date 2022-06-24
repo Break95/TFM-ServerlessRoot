@@ -22,9 +22,9 @@ with open(sys.argv[1] , 'r') as config_file:
     total_reductions = int(config_file.readline())
 
 # Configure minio client
-mc = Minio(endpoint=sys.argv[4][8:],
-           access_key=sys.argv[5],
-           secret_key=sys.argv[6],
+mc = Minio(endpoint=sys.argv[3][8:],
+           access_key=sys.argv[4],
+           secret_key=sys.argv[5],
            secure=False,
            http_client=urllib3.ProxyManager(
                sys.argv[4],
@@ -33,7 +33,7 @@ mc = Minio(endpoint=sys.argv[4][8:],
 )
 
 # Extract bucket name
-bucket_name = sys.argv[3].split('/')[0]
+bucket_name = sys.argv[2].split('/')[0]
 event_count = 0
 event_list = []
 job_name = ''

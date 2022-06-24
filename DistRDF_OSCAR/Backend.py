@@ -174,13 +174,16 @@ class OSCARBackend(Base.BaseBackend):
             out_prefixes.append('partial-resuts')
         else: # We should be writting path for coordinator in this case.
             trigger_path = f'{bucket_name}/coord-config'
-            out_prefixes.append('reducer-jobs')
+            # The coordinator doesnt write to the container file system
+            # It writes to minio directly through the minio client
+            # So, no out prefixes.
 
 
         print(f'Trigger path: {trigger_path}')
         script_suffix = ''
 
-        if self.client['benchmarking'] == True and function != 'coordinator':
+        unbenchmarked = ['reducer-coord', 'coordinator'] # Services not available for benchmarking
+        if self.client['benchmarking'] == True and function not in unbenchmarked:
             out_prefixes.append('benchmarking')
             script_suffix = '-benchmark'
 
