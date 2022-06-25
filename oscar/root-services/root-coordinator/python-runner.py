@@ -21,13 +21,14 @@ with open(sys.argv[1] , 'r') as config_file:
     parts_per_red = int(config_file.readline())
     total_reductions = int(config_file.readline())
 
+
 # Configure minio client
 mc = Minio(endpoint=sys.argv[3][8:],
            access_key=sys.argv[4],
            secret_key=sys.argv[5],
            secure=False,
            http_client=urllib3.ProxyManager(
-               f'https://{sys.argv[4]}',
+               f'https://{sys.argv[3]}',
                cert_reqs='CERT_NONE'
            )
 )
