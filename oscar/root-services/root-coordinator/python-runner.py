@@ -6,7 +6,7 @@ from minio import Minio
 import urllib3
 import cloudpickle
 import io
-
+import ROOT
 
 def create_reducer_job(mc, bucket_name, job_name, job_data):
     job_bytes = cloudpickle.dumps(job_data)
