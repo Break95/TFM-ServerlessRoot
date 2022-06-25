@@ -27,7 +27,7 @@ mc = Minio(endpoint=sys.argv[3][8:],
            secret_key=sys.argv[5],
            secure=False,
            http_client=urllib3.ProxyManager(
-               sys.argv[4],
+               f'https://{sys.argv[4]}',
                cert_reqs='CERT_NONE'
            )
 )

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import time
+from time import sleep
 from math import log, ceil, floor
 from itertools import chain
 from time import sleep
@@ -56,7 +57,7 @@ class OSCARBackend(Base.BaseBackend):
         else:
             self.client['bucket_name'] = f'{self.client["bucket_name"]}-{self.client["uuid"]}'
         print(self.client['bucket_name'])
-
+        print('!!!!')
         # Create MINIO client
         # We need this version (use of http_client) due to no ssl certificates.
         self.client['mc'] = Minio(
@@ -69,7 +70,8 @@ class OSCARBackend(Base.BaseBackend):
                 cert_reqs='CERT_NONE'
             )
         )
-
+        print(self.client['mc'].bucket_exists('root-common'))
+        print('?????')
         # Check if bucket exists. Should never exist.
         if not self.client['mc'].bucket_exists(self.client['bucket_name']):
             print('Bucket does not exist. Trying to create it.')
@@ -96,6 +98,7 @@ class OSCARBackend(Base.BaseBackend):
                 print('Error creating services.')
                 raise e
         else:
+            print('ASD')
             # In current implementation bucket shouldn't exist. So, raise exception/
             raise Exception(('Bucket already exists.'))
             #print('Bucket already exists.')
@@ -169,7 +172,7 @@ class OSCARBackend(Base.BaseBackend):
         elif function == 'reducer' or function == 'reducer_v2':
             trigger_path = f"{bucket_name}/partial-results"
             out_prefixes.append('partial-results')
-        elif function == 'reducer_coord':
+        elif function == 'reducer-coord':
             trigger_path = f'{bucket_name}/reducer-jobs'
             out_prefixes.append('partial-resuts')
         else: # We should be writting path for coordinator in this case.
@@ -184,7 +187,7 @@ class OSCARBackend(Base.BaseBackend):
 
         unbenchmarked = ['reducer-coord', 'coordinator'] # Services not available for benchmarking
         if self.client['benchmarking'] == True and function not in unbenchmarked:
-            out_prefixes.append('benchmarking')
+            out_prefixes.append('benchmarks')
             script_suffix = '-benchmark'
 
         print(f'Write prefixes: {out_prefixes}')
@@ -266,7 +269,7 @@ class OSCARBackend(Base.BaseBackend):
         elif self.client['backend'] == 'tree_v2_reduce':
             pass
         elif self.client['backend'] == 'coord_reduce':
-            pass
+            self._coord_reducer()
         else:
             raise Exception('Specified backend not supported.')
 
@@ -302,6 +305,7 @@ class OSCARBackend(Base.BaseBackend):
         if self.client['benchmarking']:
                 self.benchmark_report()
 
+        sleep(20)
         # Cleanup bucket and asociated services.
         self._cleanup()
 
@@ -384,8 +388,18 @@ class OSCARBackend(Base.BaseBackend):
 
     def _coord_reducer(self):
         # Write file containing needed data for the coordinator.
-        pass
 
+        # Compute the number of reductions needed.
+        reduction_count = int(self.client['mapper_count'] / self.client['reduce_size'])
+
+        with open(f'{self.client["uuid"]}.coord_setup', 'w') as file:
+            file.write(f'{self.client["reduce_size"]}\n')
+            file.write(f'{reduction_count}')
+
+        # Write file to MINIO triggering the reducer coordinator.
+        self.client['mc'].fput_object(self.client['bucket_name'],
+                                      'coord-config/coord_setup',
+                                      f'{self.client["uuid"]}.coord_setup')
 
 
     def _serverless_coord_reducer(self):
@@ -415,7 +429,6 @@ class OSCARBackend(Base.BaseBackend):
         for error in errors:
             print(error)
 
-        time.sleep(3)
 
         try:
             self.client['mc'].remove_bucket(self.client['bucket_name'])
