@@ -21,14 +21,13 @@ with open(sys.argv[1] , 'r') as config_file:
     parts_per_red = int(config_file.readline())
     total_reductions = int(config_file.readline())
 
-
 # Configure minio client
 mc = Minio(endpoint=sys.argv[3][8:],
            access_key=sys.argv[4],
            secret_key=sys.argv[5],
            secure=False,
            http_client=urllib3.ProxyManager(
-               f'https://{sys.argv[3]}',
+               sys.argv[3],
                cert_reqs='CERT_NONE'
            )
 )
@@ -46,7 +45,7 @@ with mc.listen_bucket_notification(bucket_name,
     for event in events:
         event_count += 1
         object_name = event['Records'][0]['s3']['object']['key']
-        event_name = object_name('/')[1]
+        event_name = object_name.split('/')[1]
         event_list.append(object_name)
         job_name += f'{event_name}_'
 
