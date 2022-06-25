@@ -38,6 +38,7 @@ bucket_name = sys.argv[2].split('/')[0]
 event_count = 0
 event_list = []
 job_name = ''
+final_reduce_names = [''] * parts_per_red
 
 # Listen to writes to partial-results.
 with mc.listen_bucket_notification(bucket_name,
@@ -48,6 +49,7 @@ with mc.listen_bucket_notification(bucket_name,
         object_name = event['Records'][0]['s3']['object']['key']
         event_name = object_name('/')[1]
         event_list.append(object_name)
+        final_reduce_names[event_count-1] = object_name
         job_name += f'{event_name}_'
 
         # If we have the same amount of events queued as
@@ -58,7 +60,9 @@ with mc.listen_bucket_notification(bucket_name,
             create_reducer_job(mc, bucket_name, job_name, event_list)
 
             # Check if all reductions have been performed.
-            if total_reductions == 0:
+            # Last reduce is performed by the coordinator to simplify things and avoid
+            # extra time asociated with starting up a new service.
+            if total_reductions == 1:
                 break
 
             total_reductions -= 1
@@ -67,3 +71,31 @@ with mc.listen_bucket_notification(bucket_name,
             event_count = 0
             event_list = []
             job_name = ''
+
+# Perform last reduction.
+# Load reducer function
+print(final_reduce_names)
+reducer_response = mc.get_object(bucket_name, 'functions/reducer')
+reducer_bytes = reducer_response.data
+reducer_response.release_conn()
+reducer = cloudpickle.loads(reducer_bytes)
+print(f'Reducer: {reducer}')
+
+# Get first part
+response = mc.get_object(bucket_name, final_reduce_names.pop() )
+part_0 = cloudpickle.loads(response.data)
+response.release_conn()
+
+# Perform reduction
+for part in final_reduce_names:
+    part_response = mc.get_object(bucket_name, part)
+    tmp_part = cloudpickle.loads(part_response.data)
+    part_response.release_conn()
+    part_0 = reducer(part_0, tmp_part)
+
+# Write result to final-result/ where client should be listening.
+result_bytes = cloudpickle.dumps(part_0)
+result_stream = io.BytesIO(result_bytes)
+mc.put_object(bucket_name, f'final-result/{job_name}',
+              result_stream,
+              length = len(result_bytes))

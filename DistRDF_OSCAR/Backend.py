@@ -174,7 +174,7 @@ class OSCARBackend(Base.BaseBackend):
             out_prefixes.append('partial-results')
         elif function == 'reducer-coord':
             trigger_path = f'{bucket_name}/reducer-jobs'
-            out_prefixes.append('partial-resuts')
+            out_prefixes.append('partial-results')
         else: # We should be writting path for coordinator in this case.
             trigger_path = f'{bucket_name}/coord-config'
             # The coordinator doesnt write to the container file system
@@ -276,23 +276,37 @@ class OSCARBackend(Base.BaseBackend):
         # Write mappers jobs that will trigger the funcions.
         self._launch_mappers(ranges)
 
-        # Wait for final result
-        start = ranges[0].id
-        end = ranges[-1].id
 
-        target_name = f'{start}_{end}'
-        print(f'Target Name: {target_name}')
 
-        with self.client['mc'].listen_bucket_notification(
-                self.client['bucket_name'],
-                prefix='partial-results/',
-                events=['s3:ObjectCreated:*']) as events:
+        if self.client['backend'] == 'tree_reduce':
+            # Wait for final result
+            start = ranges[0].id
+            end = ranges[-1].id
 
-            for event in events:
-                file_name = event['Records'][0]['s3']['object']['key'].split('/')[1]
-                print(f'File {file_name} written to partial-results folder.')
-                if file_name == target_name:
+            target_name = f'{start}_{end}'
+            print(f'Target Name: {target_name}')
+
+            with self.client['mc'].listen_bucket_notification(
+                    self.client['bucket_name'],
+                    prefix='partial-results/',
+                    events=['s3:ObjectCreated:*']) as events:
+
+                for event in events:
+                    file_name = event['Records'][0]['s3']['object']['key'].split('/')[1]
+                    print(f'File {file_name} written to partial-results folder.')
+                    if file_name == target_name:
+                        break
+
+        if self.client['backend'] == 'coord_reduce':
+            with self.client['mc'].listen_bucket_notification(
+                    self.client['bucket_name'],
+                    prefix='final-result/',
+                    events=['s3:ObjectCreated:*']) as events:
+
+                for event in events:
+                    target_name = event['Records'][0]['s3']['object']['key']
                     break
+
 
         # Once the final result has been generate fetch it from
         final_result = self.get_object(target_name)
@@ -390,7 +404,14 @@ class OSCARBackend(Base.BaseBackend):
         # Write file containing needed data for the coordinator.
 
         # Compute the number of reductions needed.
-        reduction_count = int(self.client['mapper_count'] / self.client['reduce_size'])
+        #reduction_count = int(self.client['mapper_count'] / self.client['reduce_size'])
+        reduction_count = 0
+        tmp_var = self.client['mapper_count']
+
+        while tmp_var > 1: #TODO: check this loop
+            tmp_var = int(floor(tmp_var) / self.client['reduce_size'])
+            reduction_count += tmp_var
+
 
         with open(f'{self.client["uuid"]}.coord_setup', 'w') as file:
             file.write(f'{self.client["reduce_size"]}\n')
