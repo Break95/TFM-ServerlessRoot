@@ -295,9 +295,11 @@ class OSCARBackend(Base.BaseBackend):
                     file_name = event['Records'][0]['s3']['object']['key'].split('/')[1]
                     print(f'File {file_name} written to partial-results folder.')
                     if file_name == target_name:
+                        target_name = 'partial-results/' + target_name
                         break
 
         if self.client['backend'] == 'coord_reduce':
+            print('Waiting for coordinator to write final result.')
             with self.client['mc'].listen_bucket_notification(
                     self.client['bucket_name'],
                     prefix='final-result/',
@@ -429,8 +431,10 @@ class OSCARBackend(Base.BaseBackend):
 
     def get_object(self, name):
         response = self.client['mc'].get_object(self.client['bucket_name'],
-                                     f'partial-results/{name}')
-        return cloudpickle.loads(response.data)
+                                     name)
+        response.release_conn()
+        result = cloudpickle.loads(response.data)
+        return result
 
 
     def _cleanup(self):
