@@ -9,18 +9,6 @@ import ROOT
 import urllib3
 
 
-def minio_connection(endpoint, access, secret):
-    return Minio(endpoint,
-                 access_key=access,
-                 secret_key=secret,
-                 secure=False,
-                 http_client=urllib3.ProxyManager(
-                     f'https://{endpoint}',
-                     certs_reqs='CERT_NONE'
-                 )
-            )
-
-
 def get_part(mc, bucket_name, object_name):
     '''
     Fectch partial result from MINIO and return it as an object.
@@ -29,8 +17,16 @@ def get_part(mc, bucket_name, object_name):
     response_bytes = response.data
     return cloudpickle.loads(reducer_bytes)
 
+mc = Minio(endpoint=sys.argv[3][8:],
+           access_key=sys.argv[4],
+           secret_key=sys.argv[5],
+           secure=False,
+           http_client=urllib3.ProxyManager(
+              sys.argv[3],
+               cert_reqs='CERT_NONE'
+           )
+)
 
-mc = minio_connection(sys.argv[3], sys.argv[4], sys.argv[5])
 bucket_name = sys.argv[6].split('/')[0]
 
 # Get reducer from bucket.
@@ -48,12 +44,23 @@ parts = cloudpickle.load(input_file)
 result_name = ''
 tmp = parts.pop()
 result_name = tmp.split('/')[1]
-part_0 = get_part(bucket_name, tmp)
+#part_0 = get_part(mc, bucket_name, tmp)
+
+reducer_response = mc.get_object(bucket_name, tmp)
+reducer_bytes = reducer_response.data
+reducer_response.release_conn()
+part_0 = cloudpickle.loads(reducer_bytes)
+
 
 # Reduce with the remaining parts of the job.
 for part_name in parts:
+    print(part_name)
     result_name += part_name.split('/')[1]
-    tmp_part = get_part(bucket_name, part_name)
+    #tmp_part = get_part(mc, bucket_name, part_name)
+    reducer_response = mc.get_object(bucket_name, part_name)
+    reducer_bytes = reducer_response.data
+    reducer_response.release_conn()
+    tmp_part = cloudpickle.loads(reducer_bytes)
     part_0 = reducer(part_0, tmp_part)
 
 # Write result
