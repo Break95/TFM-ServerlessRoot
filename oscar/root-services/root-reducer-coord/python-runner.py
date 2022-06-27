@@ -54,8 +54,8 @@ part_0 = cloudpickle.loads(reducer_bytes)
 
 # Reduce with the remaining parts of the job.
 for part_name in parts:
-    print(part_name)
-    result_name += part_name.split('/')[1]
+    #print(part_name)
+    #result_name += part_name.split('/')[1]
     #tmp_part = get_part(mc, bucket_name, part_name)
     reducer_response = mc.get_object(bucket_name, part_name)
     reducer_bytes = reducer_response.data
@@ -64,6 +64,7 @@ for part_name in parts:
     part_0 = reducer(part_0, tmp_part)
 
 # Write result
+result_name += part_name.split('/')[1]
 result_bytes = cloudpickle.dumps(part_0)
 f = open(f'{sys.argv[2]}/partial-results/{result_name}', 'wb')
 f.write(result_bytes)
