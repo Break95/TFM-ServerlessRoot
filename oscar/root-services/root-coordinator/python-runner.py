@@ -55,15 +55,14 @@ with mc.listen_bucket_notification(bucket_name,
         # the specified number of partial results to reduce together
         # trigger the reduction.
         if event_count == parts_per_red:
-            # Trigger the reduction.
-            create_reducer_job(mc, bucket_name, job_name, event_list)
-
             # Check if all reductions have been performed.
             # Last reduce is performed by the coordinator to simplify things and avoid
             # extra time asociated with starting up a new service.
             if total_reductions == 1:
                 break
 
+            # Trigger the reduction.
+            create_reducer_job(mc, bucket_name, job_name, event_list)
             total_reductions -= 1
             
             # Reset variables
