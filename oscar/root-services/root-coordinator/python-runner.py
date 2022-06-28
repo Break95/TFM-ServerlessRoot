@@ -17,9 +17,12 @@ def create_reducer_job(mc, bucket_name, job_name, job_data):
 
 
 # Read coordinator config from imput file.
-with open(sys.argv[1] , 'r') as config_file:
-    parts_per_red = int(config_file.readline())
-    total_reductions = int(config_file.readline())
+with open(sys.argv[1] , 'rb') as config_file:
+    reduction_phases = cloudpickle.load(config_file)
+#    parts_per_red = int(config_file.readline())
+#    total_reductions = int(config_file.readline())
+
+
 
 # Configure minio client
 mc = Minio(endpoint=sys.argv[3][8:],
@@ -37,34 +40,41 @@ bucket_name = sys.argv[2].split('/')[0]
 event_count = 0
 event_list = []
 job_name = ''
-final_reduce_names = [''] * parts_per_red
+
+reductions = 0
 
 # Listen to writes to partial-results.
 with mc.listen_bucket_notification(bucket_name,
                                    prefix='partial-results',
                                    events=['s3:ObjectCreated:*']) as events:
     for event in events:
-        event_count += 1
+        #event_count += 1
         object_name = event['Records'][0]['s3']['object']['key']
         event_name = object_name.split('/')[1]
         event_list.append(object_name)
-        final_reduce_names[event_count-1] = object_name
-        job_name += f'{event_name}_'
 
+        #final_reduce_names[event_count] = object_name
+        if event_count == 0:
+            job_name += f'{event_name}_'
+
+        event_count += 1
         # If we have the same amount of events queued as
         # the specified number of partial results to reduce together
         # trigger the reduction.
-        if event_count == parts_per_red:
+        if event_count == reduction_phases[reductions]:
             # Check if all reductions have been performed.
             # Last reduce is performed by the coordinator to simplify things and avoid
             # extra time asociated with starting up a new service.
-            if total_reductions == 1:
+
+            if reductions + 1 >= len(reduction_phases):
                 break
 
             # Trigger the reduction.
+            job_name += event_name
             create_reducer_job(mc, bucket_name, job_name, event_list)
-            total_reductions -= 1
-            
+            reductions += 1
+
+
             # Reset variables
             event_count = 0
             event_list = []
@@ -72,7 +82,6 @@ with mc.listen_bucket_notification(bucket_name,
 
 # Perform last reduction.
 # Load reducer function
-print(final_reduce_names)
 reducer_response = mc.get_object(bucket_name, 'functions/reducer')
 reducer_bytes = reducer_response.data
 reducer_response.release_conn()
@@ -80,12 +89,12 @@ reducer = cloudpickle.loads(reducer_bytes)
 print(f'Reducer: {reducer}')
 
 # Get first part
-response = mc.get_object(bucket_name, final_reduce_names.pop() )
+response = mc.get_object(bucket_name, event_list.pop() )
 part_0 = cloudpickle.loads(response.data)
 response.release_conn()
 
 # Perform reduction
-for part in final_reduce_names:
+for part in event_list:
     part_response = mc.get_object(bucket_name, part)
     tmp_part = cloudpickle.loads(part_response.data)
     part_response.release_conn()
