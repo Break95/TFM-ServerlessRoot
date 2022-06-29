@@ -1,0 +1,5 @@
+function|id|phase|cpu_user|cpu_system|cpu_child_user|cpu_child_sys|iowait|io_read_count|io_write_count|io_read_bytes|io_write_bytes|io_read_chars|io_write_chars|ctx_voluntary|ctx_involuntary|mem_rss|mem_vms|mem_shared|mem_text|mem_lib|mem_data|mem_dirty|mem_uss|mem_pss|mem_swap|net_bytes_sent|net_bytes_recv|net_packets_sent|net_packets_recv|net_errin|net_errout|net_dropin|net_dropout|create_time|node
+mapper|0_0|start|0.0|0.0|0.0|0.0|0.0|5|0|0|0|1692|0|0|0|73728|6656000|0|3264512|0|798720|0|110592|142336|0|2447|3921|15|21|0|0|0|0|1656245619.79|wn1.localdomain
+mapper|0_0|end|8857.46|12.17|0.07|0.04|0.0|1138|492|0|90112|3323927|89244|222|217518|379170816|510722048|212758528|3264512|0|178368512|0|372764672|375603200|0|63275|68396|1074|1078|0|0|0|0|0|wn1.localdomain
+reducer|0_0|start|0.0|0.0|0.0|0.0|0.0|5|0|0|0|1692|0|0|0|73728|6656000|0|3264512|0|798720|0|98304|98304|0|2585|8426|17|23|0|0|0|0|1656254642.37|wn3.localdomain
+reducer|0_0|end|0.72|0.19|0.03|0.03|0.0|1050|422|0|28672|3110719|39581|248|7|279859200|342904832|187957248|3264512|0|94703616|0|273235968|276029440|0|5172|11914|29|33|0|0|0|0|0|wn3.localdomain
