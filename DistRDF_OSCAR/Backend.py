@@ -51,13 +51,17 @@ class OSCARBackend(Base.BaseBackend):
         # Generate uuid to allow job concurrency.
         self.client['uuid'] = uuid.uuid4()
 
+        if 'bucket_name' not in self.client:
+            self.client['bucket_name'] = "default"
+
         # Setup bucket name.
-        if self.client['benchmarking']:
+        if 'benchmarking' in self.client:
             self.client['bucket_name'] = f'{self.client["bucket_name"]}-{self.client["uuid"]}-benchmark'
         else:
             self.client['bucket_name'] = f'{self.client["bucket_name"]}-{self.client["uuid"]}'
-        print(self.client['bucket_name'])
-        print('!!!!')
+            self.client['benchmarking'] = False
+        print(f"Bucket name: {self.client['bucket_name']}")
+
         # Create MINIO client
         # We need this version (use of http_client) due to no ssl certificates.
         self.client['mc'] = Minio(
@@ -70,8 +74,8 @@ class OSCARBackend(Base.BaseBackend):
                 cert_reqs='CERT_NONE'
             )
         )
-        print(self.client['mc'].bucket_exists('root-common'))
-        print('?????')
+        #print(self.client['mc'].bucket_exists('root-common'))
+
         # Check if bucket exists. Should never exist.
         if not self.client['mc'].bucket_exists(self.client['bucket_name']):
             print('Bucket does not exist. Trying to create it.')
@@ -115,7 +119,11 @@ class OSCARBackend(Base.BaseBackend):
 
             # Decide which services we are need to create depending on
             # the selected backend.
-            backend = self.client['backend']
+            if 'backend' in self.client:
+                backend = self.client['backend']
+            else:
+                self.client['backend'] = 'tree_reduce'
+                backend = 'tree_reduce'
 
             services = ['mapper']
 
@@ -148,7 +156,7 @@ class OSCARBackend(Base.BaseBackend):
         check for the results of the service creation in `process_and_merge` to avoid waiting
         as much as possible.
         """
-        print(f'Creating service {service} for {self.client["bucket_name"]}')
+        print(f'Creating {service} service for bucket {self.client["bucket_name"]}')
         request_body = self._service_yaml_to_http(service)
 
         return(requests.post(f'{self.client["oscar_endpoint"]}/system/services',
@@ -161,7 +169,7 @@ class OSCARBackend(Base.BaseBackend):
     def _service_yaml_to_http(self, function):
         # TODO: read from yaml template instead of hardcoding the dictionary?
         bucket_name = f'{self.client["bucket_name"]}'
-        print(bucket_name)
+        #print(bucket_name)
 
         # Path were OSCAR will trigger the service.
         trigger_path = ''
@@ -186,9 +194,9 @@ class OSCARBackend(Base.BaseBackend):
         script_suffix = ''
 
         unbenchmarked = ['reducer-coord', 'coordinator'] # Services not available for benchmarking
-        if self.client['benchmarking'] == True and function not in unbenchmarked:
+        if 'benchmarking' in  self.client and self.client['benchmarking'] == True and function not in unbenchmarked:
             out_prefixes.append('benchmarks')
-            script_suffix = '-benchmark'
+        script_suffix = '-benchmark'
 
         print(f'Write prefixes: {out_prefixes}')
 
@@ -321,7 +329,7 @@ class OSCARBackend(Base.BaseBackend):
         if self.client['benchmarking']:
                 self.benchmark_report()
 
-        sleep(20)
+        #sleep(20)
         # Cleanup bucket and asociated services.
         self._cleanup()
 
@@ -407,23 +415,30 @@ class OSCARBackend(Base.BaseBackend):
 
         # Compute the number of reductions needed.
         #reduction_count = int(self.client['mapper_count'] / self.client['reduce_size'])
-        reduction_count = 0
-        tmp_var = self.client['mapper_count']
+        #reduction_count = 0
+        #tmp_var = self.client['mapper_count']
 
-        while tmp_var > 1: #TODO: check this loop
-            tmp_var = int(floor(tmp_var) / self.client['reduce_size'])
-            reduction_count += tmp_var
+        #while tmp_var > 1: #TODO: check this loop
+        #    tmp_var = int(floor(tmp_var) / self.client['reduce_size'])
+        #    reduction_count += tmp_var
 
-
-        with open(f'{self.client["uuid"]}.coord_setup', 'w') as file:
-            file.write(f'{self.client["reduce_size"]}\n')
-            file.write(f'{reduction_count}')
+        phases_bytes = cloudpickle.dumps(self.client['reduction_phases'])
+        phases_stream = io.BytesIO(phases_bytes)
+        self.client['mc'].put_object(self.client['bucket_name'],
+                                     'coord-config/coord_setup',
+                                     phases_stream,
+                                     length = len(phases_bytes))
+        #with open(f'{self.client["uuid"]}.coord_setup', 'w') as file:
+        #    file.write(f'{self.client["reduce_size"]}\n')
+        #    file.write(f'{reduction_count}')
 
         # Write file to MINIO triggering the reducer coordinator.
-        self.client['mc'].fput_object(self.client['bucket_name'],
-                                      'coord-config/coord_setup',
-                                      f'{self.client["uuid"]}.coord_setup')
-
+        #self.client['mc'].fput_object(self.client['bucket_name'],
+        #self.client['mc'].put_object(self.client['bucket_name'],
+        #                             'coord-config/coord_setup',
+        #                             io.BytesIO(),
+        #                             f'{self.client["uuid"]}.coord_setup')
+        #
 
     def _serverless_coord_reducer(self):
         pass
