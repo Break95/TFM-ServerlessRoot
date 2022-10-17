@@ -1,5 +1,7 @@
 *.pem
 __pycache__/
 .DS_Store/
+.DS_Store
 .ipynb_checkpoints/
 dask-worker-space/
+.Trash*/
